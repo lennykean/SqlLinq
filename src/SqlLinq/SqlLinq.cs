@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace SqlLinq
@@ -77,6 +78,27 @@ namespace SqlLinq
             JoinQuery<TSource, TInner, TResult> query = new JoinQuery<TSource, TInner, TResult>(sql);
             query.Compile();
             return query.Evaluate(enumerable, inner);
+        }
+
+        public static IEnumerable<TSource> ExtensionQuery<TSource>(
+            this IEnumerable<TSource> enumerable,
+            string sql,
+            Func<string, string> rewrite)
+        {
+            return enumerable.ExtensionQuery<TSource, TSource>(sql, rewrite);
+        }
+
+        public static IEnumerable<TResult> ExtensionQuery<TSource, TResult>(
+            this IEnumerable<TSource> enumerable,
+            string sql,
+            Func<string, string> rewrite)
+        {
+            if (rewrite == null)
+            {
+                throw new ArgumentNullException(nameof(rewrite));
+            }
+
+            return enumerable.Query<TSource, TResult>(rewrite(sql));
         }
     }
 }

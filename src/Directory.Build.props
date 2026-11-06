@@ -3,8 +3,8 @@
     <AnalysisLevel>latest-recommended</AnalysisLevel>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <PackageProjectUrl>https://github.com/dkackman/SqlLinq</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/dkackman/SqlLinq</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/lennykean/SqlLinq</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/lennykean/SqlLinq</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>

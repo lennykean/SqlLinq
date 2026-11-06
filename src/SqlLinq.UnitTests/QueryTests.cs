@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -43,6 +44,21 @@ namespace SqlLinq.UnitTests
             // Assert
             Assert.AreEqual(source.Max(p => p.Weight), result);
             Assert.AreEqual(firstThree.Max(p => p.Weight), firstThreeResult);
+        }
+
+        [TestMethod]
+        public void ExtensionQueryRunsTheRewrittenSql()
+        {
+            // Arrange
+            var source = TestData.GetPeople();
+
+            // Act
+            var result = source.ExtensionQuery(
+                "SELECT * FROM this WHERE heavy()",
+                sql => sql.Replace("heavy()", "Weight > 150", StringComparison.Ordinal));
+
+            // Assert
+            CollectionAssert.AreEqual(source.Where(p => p.Weight > 150).ToList(), result.ToList());
         }
     }
 }

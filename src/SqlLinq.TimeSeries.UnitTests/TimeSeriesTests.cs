@@ -861,5 +861,19 @@ namespace SqlLinq.TimeSeries.UnitTests
             // Act & Assert
             Assert.ThrowsExactly<SqlException>(() => FacetExpression.Compile<IDictionary<string, object>>(expression));
         }
+
+        [TestMethod]
+        public void ExtensionMethodEvaluatesLikeTheQueryClass()
+        {
+            // Arrange
+            const string Nrql = "SELECT count(*) AS Samples FROM shipslog TIMESERIES 1 second";
+            var samples = GetSamples();
+
+            // Act
+            var result = samples.TimeSeriesQuery(Nrql, s => TimeSpan.FromSeconds(s.Time));
+
+            // Assert
+            CollectionAssert.AreEqual(Column(Run(Nrql), "Samples"), Column(result, "Samples"));
+        }
     }
 }

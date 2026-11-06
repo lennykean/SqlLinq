@@ -245,5 +245,28 @@ namespace SqlLinq.Units.UnitTests
             var e = Assert.ThrowsExactly<SqlException>(() => Units.Expand(expression));
             Assert.IsTrue(e.Message.StartsWith(message, StringComparison.Ordinal), e.Message);
         }
+
+        [TestMethod]
+        public void UnitQueryExpandsConvertBeforeQuerying()
+        {
+            // Act
+            var hot = Frames.UnitQuery("SELECT * FROM this WHERE convert(CoreTemp, '°F') > 190", Units);
+
+            // Assert
+            CollectionAssert.AreEqual(Frames.Where(f => f.CoreTemp * 1.8 + 32 > 190).ToList(), hot.ToList());
+        }
+
+        [TestMethod]
+        public void UnitQueryRunsTheRewriteBeforeConverting()
+        {
+            // Act
+            var hot = Frames.UnitQuery(
+                "SELECT * FROM this WHERE hot()",
+                Units,
+                sql => sql.Replace("hot()", "convert(CoreTemp, '°F') > 190", StringComparison.Ordinal));
+
+            // Assert
+            CollectionAssert.AreEqual(Frames.Where(f => f.CoreTemp * 1.8 + 32 > 190).ToList(), hot.ToList());
+        }
     }
 }

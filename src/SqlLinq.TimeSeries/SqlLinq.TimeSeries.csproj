@@ -6,9 +6,11 @@
     <Authors>lennykean</Authors>
     <Description>Time series queries for SqlLinq.</Description>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
     <None Include="LICENSE" Pack="true" PackagePath="" />
+    <None Include="README.md" Pack="true" PackagePath="" />
     <ProjectReference Include="..\SqlLinq\SqlLinq.csproj" />
   </ItemGroup>
 </Project>
