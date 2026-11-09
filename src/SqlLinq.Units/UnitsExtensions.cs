@@ -25,7 +25,7 @@ namespace SqlLinq.Units
                 throw new ArgumentNullException(nameof(units));
             }
 
-            return source.ExtensionQuery<TSource, TResult>(sql, text => units.Expand(rewrite == null ? text : rewrite(text)));
+            return source.Query<TSource, TResult>(rewrite == null ? sql : rewrite(sql), new ISqlFunction[] { units });
         }
     }
 }

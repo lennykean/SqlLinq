@@ -11,7 +11,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 
         protected override Expression CreateChildExpression(Expression left, Expression right)
         {
-            return Expression.GreaterThanOrEqual(left, right);
+            return Compare(left, right, Expression.GreaterThanOrEqual);
         }
     }
 }

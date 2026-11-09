@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
 
 namespace SqlLinq
@@ -23,6 +24,14 @@ namespace SqlLinq
         protected SqlException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         {
+        }
+
+        internal static void ThrowIfNestedTooDeeply()
+        {
+            if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            {
+                throw new SqlException("The query is nested too deeply.");
+            }
         }
     }
 }

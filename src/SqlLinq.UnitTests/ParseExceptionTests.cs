@@ -51,7 +51,7 @@ namespace SqlLinq.UnitTests
         public void GroupByWithoutAggregate()
         {
             IEnumerable<Person> source = TestData.GetPeople();
-            Assert.ThrowsExactly<SqlException>(() => source.Query<Person, IDictionary<string, object>>("SELECT Address FROM this GROUP BY Address"));
+            Assert.ThrowsExactly<SqlException>(() => source.Query<Person, IDictionary<string, object>>("SELECT Name FROM this GROUP BY Address"));
         }
 
         [TestMethod]

@@ -19,8 +19,15 @@ namespace SqlLinq
         {
             Debug.Assert(!string.IsNullOrEmpty(sql));
             Sql = sql;
-            ResultFilters = new Filter<TResult>();
         }
+
+        protected QueryBase(string sql, IEnumerable<ISqlFunction> functions)
+            : this(sql)
+        {
+            _functions = functions;
+        }
+
+        private readonly IEnumerable<ISqlFunction> _functions;
 
         void ICompile.Compile(SelectNode syntaxNode)
         {
@@ -30,9 +37,14 @@ namespace SqlLinq
 
         public void Compile()
         {
-            SqlParser parser = new SqlParser();
+            SqlParser parser = new SqlParser(_functions);
             if (!parser.Parse(Sql))
                 throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin statement\n\t{1}", parser.ErrorString, parser.ErrorLine));
+
+            if (parser.SyntaxTree is UnionNode)
+            {
+                throw new SqlException("A compiled query can't run a UNION; use the Query extension methods instead.");
+            }
 
             SyntaxNode = parser.SyntaxTree as SelectNode;
             Debug.Assert(SyntaxNode != null);
@@ -45,8 +57,6 @@ namespace SqlLinq
         internal SelectNode SyntaxNode { get; private set; }
 
         public string Sql { get; private set; }
-
-        internal Filter<TResult> ResultFilters { get; private set; }
 
         public override string ToString()
         {

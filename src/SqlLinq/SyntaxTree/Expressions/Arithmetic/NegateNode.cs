@@ -13,7 +13,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Arithmetic
                 return Expression.NegateChecked(value);
             }
 
-            return Expression.Convert(Expression.NegateChecked(ArithmeticExpressionNode.ToNumber(value)), typeof(object));
+            return ArithmeticExpressionNode.Negate(value);
         }
     }
 }

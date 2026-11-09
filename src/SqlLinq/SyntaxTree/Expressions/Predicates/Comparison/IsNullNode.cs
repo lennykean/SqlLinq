@@ -12,7 +12,13 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 
         internal override Expression CreateExpression(ParameterExpression sourceData, ParameterExpression param)
         {
-            return Expression.Equal(CreateChildExpression(sourceData, param, 0), Expression.Constant(null));
+            var value = CreateChildExpression(sourceData, param, 0);
+            if (value.Type.IsValueType && Nullable.GetUnderlyingType(value.Type) == null)
+            {
+                return Expression.Constant(false);
+            }
+
+            return Expression.Equal(value, Expression.Constant(null, value.Type));
         }
     }
 }

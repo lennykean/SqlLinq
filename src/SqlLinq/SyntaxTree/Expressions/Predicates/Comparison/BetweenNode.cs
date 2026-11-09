@@ -22,6 +22,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 
             Type widest = expression.Type.Widest(start.Type, end.Type);
             Debug.Assert(widest != null);
+            widest = widest.Lifted(expression.Type, start.Type, end.Type);
 
             if (expression.Type != widest)
                 expression = ExpressionFactory.ConvertTo(expression, widest);
@@ -32,10 +33,10 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             if (end.Type != widest)
                 end = ExpressionFactory.ConvertTo(end, widest);
 
-            Expression gte = Expression.GreaterThanOrEqual(expression, start);
-            Expression lte = Expression.LessThanOrEqual(expression, end);
+            var gte = PredicateExpressionNode.Compare(expression, start, Expression.GreaterThanOrEqual);
+            var lte = PredicateExpressionNode.Compare(expression, end, Expression.LessThanOrEqual);
 
-            return Expression.TryCatch(Expression.And(gte, lte), Expression.Catch(typeof(Exception), Expression.Constant(false)));
+            return TupleSelectNode.Guard(Expression.And(gte, lte));
         }
     }
 }

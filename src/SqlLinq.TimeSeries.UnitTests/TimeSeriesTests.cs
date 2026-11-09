@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Linq.Expressions;
+using System.Threading;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace SqlLinq.TimeSeries.UnitTests
@@ -223,6 +225,30 @@ namespace SqlLinq.TimeSeries.UnitTests
             CollectionAssert.AreEqual(new object[] { TimeSpan.Zero, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(3) }, Column(rows, "BeginTime"));
             CollectionAssert.AreEqual(new object[] { 0, 1, 1, 1 }, Column(rows, "N"));
             CollectionAssert.AreEqual(new object[] { null, 98.7, 101.3, 92.0 }, Column(rows, "M"));
+        }
+
+        [TestMethod]
+        public void DottedChannelNamesReadDictionaryRows()
+        {
+            // Arrange
+            var samples = GetSamples()
+                .Select(s => (IDictionary<string, object>)new Dictionary<string, object>
+                {
+                    ["Time"] = s.Time,
+                    ["Drive.Spin"] = s.DriveSpin,
+                    ["Drive.Stage"] = s.DriveStage,
+                })
+                .ToList();
+            var query = new TimeSeriesQuery<IDictionary<string, object>>(
+                "SELECT max(Drive.Spin) AS Top, count(*) AS N FROM shipslog WHERE Drive.Stage >= 2 TIMESERIES 1 second",
+                r => TimeSpan.FromSeconds((double)r["Time"]));
+
+            // Act
+            var rows = query.Evaluate(samples);
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { null, 6200, 7900, 5600 }, Column(rows, "Top"));
+            CollectionAssert.AreEqual(new object[] { 0, 2, 2, 1 }, Column(rows, "N"));
         }
 
         [TestMethod]
@@ -874,6 +900,86 @@ namespace SqlLinq.TimeSeries.UnitTests
 
             // Assert
             CollectionAssert.AreEqual(Column(Run(Nrql), "Samples"), Column(result, "Samples"));
+        }
+
+        [TestMethod]
+        public void FunctionsCompileInWhereFacetAndAggregates()
+        {
+            // Arrange
+            var functions = new ISqlFunction[]
+            {
+                new TestFunction("twice", arguments => Expression.Multiply(Expression.Convert(arguments[0].Expression, typeof(double)), Expression.Constant(2.0))),
+            };
+
+            // Act
+            var result = GetSamples().TimeSeriesQuery(
+                "SELECT max(twice(DriveSpin)) AS TopSpin FROM shipslog WHERE twice(DriveStage) > 2 FACET twice(DriveStage) LIMIT 1",
+                s => TimeSpan.FromSeconds(s.Time),
+                null,
+                functions);
+
+            // Assert
+            var row = result.Single();
+            Assert.AreEqual(6.0, row["twice(DriveStage)"]);
+            Assert.AreEqual(15800.0, row["TopSpin"]);
+        }
+
+        [TestMethod]
+        public void CancellingStopsTheQueryWhileItReadsSamples()
+        {
+            // Arrange
+            using var cancellation = new CancellationTokenSource();
+            var query = new TimeSeriesQuery<Sample>("SELECT average(DriveSpin) FROM shipslog", s => TimeSpan.FromSeconds(s.Time));
+            var samples = CancelOnRead(GetSamples(), 2, cancellation);
+
+            // Act
+            var exception = Assert.ThrowsExactly<OperationCanceledException>(() => query.Evaluate(samples, cancellation.Token));
+
+            // Assert
+            Assert.AreEqual(cancellation.Token, exception.CancellationToken);
+        }
+
+        [TestMethod]
+        [Timeout(10000)]
+        public void TimeoutStopsARunawayBucketCount()
+        {
+            // Arrange
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+            var query = new TimeSeriesQuery<int>("SELECT count(*) AS Samples FROM shipslog TIMESERIES 1 second", days => TimeSpan.FromDays(days));
+            var source = new[] { 0, 30 };
+
+            // Act
+            var exception = Assert.ThrowsExactly<OperationCanceledException>(() => query.Evaluate(source, timeout.Token));
+
+            // Assert
+            Assert.AreEqual(timeout.Token, exception.CancellationToken);
+        }
+
+        [TestMethod]
+        public void TimeSeriesQueryExtensionStopsOnACancelledToken()
+        {
+            // Arrange
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            // Act
+            var exception = Assert.ThrowsExactly<OperationCanceledException>(() => GetSamples().TimeSeriesQuery("SELECT count(*) FROM shipslog", s => TimeSpan.FromSeconds(s.Time), null, null, cancellation.Token));
+
+            // Assert
+            Assert.AreEqual(cancellation.Token, exception.CancellationToken);
+        }
+
+        private static IEnumerable<T> CancelOnRead<T>(IEnumerable<T> rows, int read, CancellationTokenSource cancellation)
+        {
+            foreach (var row in rows)
+            {
+                if (read-- == 0)
+                {
+                    cancellation.Cancel();
+                }
+
+                yield return row;
+            }
         }
     }
 }

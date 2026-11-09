@@ -3,6 +3,7 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Diagnostics;
+using System.Globalization;
 
 using SqlLinq.SyntaxTree.Expressions;
 using SqlLinq.SyntaxTree.Aggregates;
@@ -34,45 +35,66 @@ namespace SqlLinq.SyntaxTree.Clauses
 
         public Func<IEnumerable<TSource>, IEnumerable<TResult>> CreateGroupBySelector<TSource, TResult>(IEnumerable<AggregateNode> aggregates)
         {
-            // figure out what types the multipart key consists of and get the correct geenric instance
-            // we are using Tuples to hold the key
-            IEnumerable<Type> types = GroupByItems.Select(g => typeof(TSource).GetFieldType(g.Id.LookupId));
-            IEnumerable<string> sourceFields = GroupByItems.Select(g => g.Id.LookupId);
-            Type tupleTemplate = GetTupleTemplate(types.Count());
-            Type tupleType = tupleTemplate.MakeGenericType(types.ToArray());
+            var list = Expression.Parameter(typeof(IEnumerable<TSource>), "list");
 
-            // this instance of the tuple will be the multi-part key the same way as if you did
-            // from p in source
-            // group p by new Tuple<string, string>(p.Name, p.Address) into g
-            //
-            // for the degenerate case of only a single part key like a string a Tuple<string> is used
-            var newTuple = ExpressionFactory.CreateSelectIntoObjectConstructor<TSource>(tupleType, sourceFields, types);
+            return Expression.Lambda<Func<IEnumerable<TSource>, IEnumerable<TResult>>>(CreateGroups(list, typeof(TSource), typeof(TResult), null), list).Compile();
+        }
 
-            // the grouped subset passed to resultSelector
-            var source = Expression.Parameter(typeof(IEnumerable<TSource>), "source");
+        internal Expression CreateGroups(ParameterExpression rows, Type tSource, Type tResult, HavingClause having)
+        {
+            var select = EnclosingSelect();
+            var item = Expression.Parameter(tSource, "item");
+            var keys = GroupByItems.Select(g => select.CreateFieldSelector(g.Id, item)).ToList();
+            Validate();
 
-            var aggregateDelegates = from a in aggregates
-                                     select new KeyValuePair<string, Delegate>
-                                     (
-                                         a.ColumnAlias,
-                                         Expression.Lambda(a.GetCallExpression(typeof(TSource), source), source).Compile()
-                                     );
+            var types = keys.Select(k => k.Type).ToArray();
+            var keyType = GetTupleTemplate(types.Length).MakeGenericType(types);
+            var sequence = QueryTree.Sequence(tSource);
+            var key = Expression.Parameter(keyType, "key");
+            var group = Expression.Parameter(sequence, "group");
+            Expression groups = Expression.Call(
+                typeof(Enumerable),
+                nameof(Enumerable.GroupBy),
+                new[] { tSource, keyType, sequence },
+                rows,
+                Expression.Lambda(Expression.New(keyType.GetConstructor(types), keys), item),
+                Expression.Lambda(group, key, group));
 
-            // create an object to cache the aggregate expressions for the result selector
-            // this is so we can invoke the aggregate on the grouped subset of data
-            GroupByCall<TSource, TResult> groupingCall = GroupByCallFactory.Create<TSource, TResult>(sourceFields, aggregateDelegates);
+            if (having != null)
+            {
+                groups = QueryTree.Where(groups, sequence, g => having.CreateGroupPredicate(g, tSource));
+            }
 
-            // create the call to the result selector
-            var key = Expression.Parameter(tupleType, "key");
+            return QueryTree.Select(groups, sequence, tResult, g => select.Columns.CreateGroupResult(g, tSource, tResult));
+        }
 
-            var evaluate = Expression.Call(Expression.Constant(groupingCall), "Evaluate", null, key, source);
-            var resultSelectorLambda = Expression.Lambda(evaluate, key, source);
+        internal void Validate()
+        {
+            var select = EnclosingSelect();
+            var keys = new HashSet<string>(GroupFields(), StringComparer.OrdinalIgnoreCase);
+            var columns = select.Columns.ColumnSources.ToList();
+            var selected = columns.Where(c => !(c is AggregateNode) && !(c is ComputedColumn) && c.Function == null).Select(c => c.Id.LookupId);
+            var computed = columns.OfType<ComputedColumn>().SelectMany(c => c.Fields).Concat(columns.SelectMany(c => c.ArgumentFields)).Select(f => f.Id.LookupId);
 
-            // package all of that up in a call to Enumerable.GroupBy
-            var groupByExpression = Expression.Call(typeof(Enumerable), "GroupBy", new Type[] { typeof(TSource), tupleType, typeof(TResult) }, source, newTuple, resultSelectorLambda);
+            var ungrouped = selected.Concat(computed).FirstOrDefault(f => !keys.Contains(select.Field(f)));
+            if (ungrouped != null)
+            {
+                var message = string.Format(CultureInfo.CurrentCulture, "The query contains the field '{0}' that is not matched between the select list and group by clause.", ungrouped);
+                var unknown = GroupByItems.FirstOrDefault(g => !select.Owns(g.Id));
+                if (unknown != null)
+                {
+                    message += string.Format(CultureInfo.CurrentCulture, " {0} in {1} isn't a source or alias of this query.", unknown.Id.Qualifier, unknown.Id.LookupId);
+                }
 
-            // create the lamda and compile
-            return Expression.Lambda<Func<IEnumerable<TSource>, IEnumerable<TResult>>>(groupByExpression, source).Compile();
+                throw new SqlException(message);
+            }
+        }
+
+        private List<string> GroupFields()
+        {
+            var select = EnclosingSelect();
+
+            return GroupByItems.Select(g => select.Field(g.Id.LookupId)).ToList();
         }
 
         private static Type GetTupleTemplate(int typeArgumentCount)

@@ -19,6 +19,10 @@ namespace SqlLinq.SyntaxTree.Expressions
         {
             Type widest = right.Type.Widest(left.Type);
             Debug.Assert(widest != null);
+            if (Lifts)
+            {
+                widest = widest.Lifted(left.Type, right.Type);
+            }
 
             if (right.Type != widest)
             {
@@ -33,6 +37,14 @@ namespace SqlLinq.SyntaxTree.Expressions
             var body = CreateChildExpression(left, right);
 
             return WrapReturnExpression(body);
+        }
+
+        internal virtual bool Lifts
+        {
+            get
+            {
+                return false;
+            }
         }
 
         protected virtual Expression WrapReturnExpression(Expression body)

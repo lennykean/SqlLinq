@@ -1,6 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Linq.Expressions;
 using System.Diagnostics;
 
@@ -15,9 +13,16 @@ namespace SqlLinq.SyntaxTree
         {
         }
 
-        public override Func<IEnumerable<TSource>, IEnumerable<TResult>> CreateSelector<TSource, TResult>()
+        internal override Expression CreateRowResult(ParameterExpression rows, ParameterExpression row, Type tResult)
         {
-            return list => list.Select(ExpressionFactory.CreateIdentitySelector<TSource, TResult>().Compile());
+            var layout = EnclosingSelect().Layout;
+
+            if (layout == null)
+            {
+                return row;
+            }
+
+            return tResult == null ? layout.Star(row) : Expression.Convert(layout.Star(row), tResult);
         }
     }
 }

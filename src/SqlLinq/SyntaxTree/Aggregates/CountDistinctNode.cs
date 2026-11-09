@@ -14,6 +14,14 @@ namespace SqlLinq.SyntaxTree.Aggregates
             Name = "CountDistinct";
         }
 
+        internal override bool CountsDistinct
+        {
+            get
+            {
+                return true;
+            }
+        }
+
         public static int CountDistinct<TSource, TResult>(IEnumerable<TSource> source, Func<TSource, TResult> selector)
         {
             return CountDistinct<TResult>(source.Select(selector));

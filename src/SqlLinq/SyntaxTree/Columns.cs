@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
-using System.Diagnostics;
+using System.Globalization;
 
 using SqlLinq.SyntaxTree.Aggregates;
 
@@ -27,7 +27,10 @@ namespace SqlLinq.SyntaxTree
         {
             get
             {   // we have only calculated fields
-                return Aggregates.Any() && Aggregates.Count() == ColumnSources.Count();
+                var columns = ColumnSources.ToList();
+
+                return columns.Any(c => c is AggregateNode || c is ComputedColumn computed && computed.HasAggregates)
+                    && columns.All(c => c is AggregateNode || c is ComputedColumn computed && !computed.Fields.Any());
             }
         }
 
@@ -35,7 +38,7 @@ namespace SqlLinq.SyntaxTree
         {
             get
             {
-                return FindDescendants<AggregateNode>();
+                return FindDescendants<AggregateNode>().Where(a => a.EnclosingSelect() == EnclosingSelect());
             }
         }
 
@@ -51,10 +54,11 @@ namespace SqlLinq.SyntaxTree
         public Func<IEnumerable<TSource>, IEnumerable<TInner>, TResult> CreateScalarSelector<TSource, TInner, TResult>(Func<IEnumerable<TSource>, IEnumerable<TInner>, IEnumerable<object>> selector)
         {
             ParameterExpression source = Expression.Parameter(typeof(IEnumerable<TSource>), "source");
-            var eval = Expression.Call(Expression.Constant(selector.Target), selector.Method, source);
+            var inner = Expression.Parameter(typeof(IEnumerable<TInner>), "inner");
+            var eval = Expression.Call(Expression.Constant(selector.Target), selector.Method, source, inner);
             var _get = Expression.Call(GetType(), "GetScalarValue", new Type[] { typeof(TResult) }, eval);
 
-            return Expression.Lambda<Func<IEnumerable<TSource>, IEnumerable<TInner>, TResult>>(_get, source).Compile();
+            return Expression.Lambda<Func<IEnumerable<TSource>, IEnumerable<TInner>, TResult>>(_get, source, inner).Compile();
         }
 
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Performance", "CA1811:AvoidUncalledPrivateCode")]
@@ -76,57 +80,74 @@ namespace SqlLinq.SyntaxTree
 
         public virtual Func<IEnumerable<TSource>, IEnumerable<TResult>> CreateSelector<TSource, TResult>()
         {
-            if (IsAggregateOnlyQuery)
-                return CreateAggregateSelector<TSource, TResult>();
+            var list = Expression.Parameter(typeof(IEnumerable<TSource>), "list");
 
-            return list => list.Select(CreateReturnFunction<TSource, TResult>());
+            return Expression.Lambda<Func<IEnumerable<TSource>, IEnumerable<TResult>>>(CreateSelection(list, typeof(TSource), typeof(TResult)), list).Compile();
         }
 
-        private Func<IEnumerable<TSource>, IEnumerable<TResult>> CreateAggregateSelector<TSource, TResult>()
+        internal Expression CreateSelection(ParameterExpression rows, Type tSource, Type tResult)
         {
-            var arg = Expression.Parameter(typeof(IEnumerable<TSource>), "arg");
+            if (!IsAggregateOnlyQuery)
+            {
+                return QueryTree.Select(rows, tSource, tResult, row => CreateRowResult(rows, row, tResult));
+            }
 
-            // for each aggregate in the query create a lambda expression and add it to the cache
-            var delegates = (from a in Aggregates
-                             select new
-                             {
-                                 Name = a.ColumnAlias,
-                                 Func = Expression.Lambda(a.GetCallExpression(typeof(TSource), arg), arg).Compile()
-                             }).ToDictionary(o => o.Name, o => o.Func, StringComparer.OrdinalIgnoreCase);
+            var sequence = QueryTree.Sequence(tSource);
+            var whole = Expression.Call(typeof(Enumerable), nameof(Enumerable.Repeat), new[] { sequence }, rows, Expression.Constant(1));
 
-            // create an object to cache some state for the result selector
-            AggregateFunctions<TSource, TResult> aggregateSet = AggregateFunctionsFactory.Create<TSource, TResult>(delegates);
-
-            var evaluate = Expression.Call(Expression.Constant(aggregateSet), "Evaluate", null, arg);
-
-            return Expression.Lambda<Func<IEnumerable<TSource>, IEnumerable<TResult>>>(evaluate, arg).Compile();
+            return QueryTree.Select(whole, sequence, tResult, group => CreateGroupResult(group, tSource, tResult));
         }
 
-        private Func<TSource, TResult> CreateReturnFunction<TSource, TResult>()
+        internal virtual Expression CreateRowResult(ParameterExpression rows, ParameterExpression row, Type tResult)
         {
-            IEnumerable<string> fields = FieldList;
-            IEnumerable<string> results = ResultList;
-            Debug.Assert(fields.Any() && results.Any());
+            var columns = ColumnSources.ToList();
+            if (tResult == null)
+            {
+                return columns[0].CreateRowValue(rows, row);
+            }
 
-            // if TResult is a dictionary
-            if (typeof(TResult).IsDictionary())
-                return ExpressionFactory.CreateSelectIntoDictionary<TSource, TResult>(fields, results).Compile();
+            var names = columns.Select(c => c.ColumnAlias).ToList();
+            if (columns.Count > 1)
+            {
+                RequireDistinctNames(tResult, names);
+            }
 
-            //// if selecting only one field create a simple selection function
-            if (results.Count() == 1)
-                return ExpressionFactory.CreateSelectSingleField<TSource, TResult>(fields.First()).Compile();
+            return ExpressionFactory.CreateResult(tResult, names, columns.Select(c => c.CreateRowValue(rows, row)).ToList());
+        }
 
-            // if TResult is dynamic return an expando object
-            if (typeof(TResult) == typeof(object))
-                return ExpressionFactory.CreateSelectIntoExpando<TSource, TResult>(fields, results).Compile();
+        internal Expression CreateGroupResult(ParameterExpression rows, Type tSource, Type tResult)
+        {
+            var columns = ColumnSources.ToList();
+            var values = columns
+                .Select(c => c is AggregateNode aggregate ? aggregate.GetCallExpression(tSource, rows) : FirstRowValue(c, rows, tSource))
+                .ToList();
+            if (tResult == null)
+            {
+                return values[0];
+            }
 
-            // if return type has an empty constructor use it and memberinit
-            if (typeof(TResult).HasEmptyConstructor())
-                return ExpressionFactory.CreateSelectIntoObjectMembers<TSource, TResult>(fields, results).Compile();
+            var names = columns.Select(c => c.ColumnAlias).ToList();
+            RequireDistinctNames(tResult, names);
 
-            // otherwise try and use a constructor that matches the field list types - specifically useful for Tuple<>            
-            IEnumerable<Type> resultTypes = GetResultTypes(typeof(TResult));
-            return ExpressionFactory.CreateSelectIntoObjectConstructor<TSource, TResult>(fields, resultTypes).Compile();
+            return ExpressionFactory.CreateResult(tResult, names, values, true);
+        }
+
+        internal static void RequireDistinctNames(Type tResult, IEnumerable<string> names)
+        {
+            var byName = tResult.IsDictionary() || tResult == typeof(object) || tResult.HasEmptyConstructor();
+            var duplicate = names.GroupBy(n => n, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
+            if (byName && duplicate != null)
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The select list has more than one column named '{0}'; give each a different name with AS.", duplicate.Key));
+            }
+        }
+
+        private static Expression FirstRowValue(ColumnSource column, ParameterExpression rows, Type tSource)
+        {
+            var row = Expression.Parameter(tSource, "row");
+            var first = Expression.Call(typeof(Enumerable), nameof(Enumerable.FirstOrDefault), new[] { tSource }, rows);
+
+            return ParameterReplacer.Replace(column.CreateRowValue(rows, row), row, first);
         }
 
         public IEnumerable<string> FieldList
@@ -146,20 +167,13 @@ namespace SqlLinq.SyntaxTree
                         select c.ColumnAlias).Distinct(StringComparer.OrdinalIgnoreCase);
             }
         }
-        private IEnumerable<Type> GetResultTypes(Type tResult)
-        {
-            var columns = ColumnSources;
-            return from c in columns
-                   select tResult.GetFieldType(c.Id.LocalId, columns.IndexOf(c));
-        }
-
         public IEnumerable<ColumnSource> ColumnSources
         {
             get
             {
                 // depending on how the select statement is constructed the parser may or may not eliminate some intermediate reductions
                 // the where statement here will eliminate those instances where reductions are not eliminated by the parser        
-                return FindDescendants<ColumnSource>().Where(item => item.FindChild<ColumnSource>() == null);
+                return FindDescendants<ColumnSource>().Where(item => item.FindChild<ColumnSource>() == null && !item.AncestorsBelow(this).OfType<ComputedColumn>().Any());
             }
         }
     }

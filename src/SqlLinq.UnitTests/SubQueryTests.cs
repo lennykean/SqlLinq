@@ -10,7 +10,6 @@ namespace SqlLinq.UnitTests
     public class SubQueryTests
     {
         [TestMethod]
-        [Ignore]
         public void SelectWhereInSubQuery()
         {
             var people = TestData.GetPeople();
@@ -19,7 +18,7 @@ namespace SqlLinq.UnitTests
             var mm = people.Query<Person, object>("SELECT MAX(age), MIN(age) FROM this");
 
 
-            var result = people.Query("SELECT * FROM this WHERE age IN ((SELECT MAX(age) FROM this))");
+            var result = people.Query("SELECT * FROM this WHERE age IN ((SELECT MAX(age) FROM this), (SELECT MIN(age) FROM this))");
 
             var answer = from p in people
                          where (from p2 in people

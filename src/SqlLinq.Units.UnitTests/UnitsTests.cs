@@ -4,7 +4,9 @@ using System.Globalization;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using SqlLinq.TimeSeries;
+using UnitsNet;
 using UnitsNet.Metadata;
+using UnitsNet.Units;
 
 namespace SqlLinq.Units.UnitTests
 {
@@ -267,6 +269,57 @@ namespace SqlLinq.Units.UnitTests
 
             // Assert
             CollectionAssert.AreEqual(Frames.Where(f => f.CoreTemp * 1.8 + 32 > 190).ToList(), hot.ToList());
+        }
+
+        private static double MaxAsFunction(string expression)
+        {
+            var functions = new ISqlFunction[] { Units };
+
+            return (double)new TimeSeriesQuery<Frame>("SELECT max(" + expression + ") AS M FROM shipslog", f => TimeSpan.FromSeconds(f.Time), null, functions).Evaluate(Frames).Single()["M"];
+        }
+
+        [TestMethod]
+        public void ConvertAsAFunctionMatchesExpand()
+        {
+            // Act
+            var fahrenheit = MaxAsFunction("convert(CoreTemp, '°F')");
+            var psi = MaxAsFunction("convert(Scan, 'Pressure.kPa', 'psi')");
+            var nested = MaxAsFunction("convert(convert(PlasmaPressure, 'bar'), 'Pressure.bar', 'psi')");
+
+            // Assert
+            Assert.AreEqual(Max("convert(CoreTemp, '°F')"), fahrenheit, 1e-9);
+            Assert.AreEqual(Max("convert(Scan, 'Pressure.kPa', 'psi')"), psi, 1e-9);
+            Assert.AreEqual(Max("convert(convert(PlasmaPressure, 'bar'), 'Pressure.bar', 'psi')"), nested, 1e-9);
+        }
+
+        [TestMethod]
+        public void ConvertAsAFunctionSupportsNonLinearUnits()
+        {
+            // Act
+            var bar = MaxAsFunction("convert(Scan, 'Pressure.FootOfElevation', 'bar')");
+            var kilometersPerLiter = MaxAsFunction("convert(Scan, 'FuelEfficiency.LiterPer100Kilometers', 'KilometerPerLiter')");
+
+            // Assert
+            Assert.AreEqual(Frames.Max(f => UnitConverter.Convert(f.Scan, PressureUnit.FootOfElevation, PressureUnit.Bar)), bar, 1e-9);
+            Assert.AreEqual(100.0, kilometersPerLiter, 1e-9);
+        }
+
+        [TestMethod]
+        public void ConvertAsAFunctionReportsOverflowAsSqlException()
+        {
+            // Act & Assert
+            var e = Assert.ThrowsExactly<SqlException>(() => MaxAsFunction("convert(Scan, 'Power.Petawatt', 'Femtowatt')"));
+            Assert.Contains("overflowed", e.Message);
+        }
+
+        [TestMethod]
+        public void UnitQuerySupportsNonLinearUnits()
+        {
+            // Act
+            var efficient = Frames.UnitQuery("SELECT * FROM this WHERE convert(Scan, 'FuelEfficiency.LiterPer100Kilometers', 'KilometerPerLiter') > 40", Units);
+
+            // Assert
+            CollectionAssert.AreEqual(Frames.Where(f => 100 / f.Scan > 40).ToList(), efficient.ToList());
         }
     }
 }

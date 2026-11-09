@@ -21,17 +21,22 @@ namespace SqlLinq.TimeSeries
 
         public static IReadOnlyList<string> Labels(string expression)
         {
-            Compile<object>(expression, null, true, out var labels);
+            Compile<object>(expression, null, null, true, out var labels);
 
             return labels;
         }
 
         public static Func<T, object> Compile<T>(string expression, Func<string, string> rewrite = null)
         {
-            return Compile<T>(expression, rewrite ?? (text => text), false, out _);
+            return Compile<T>(expression, rewrite, null);
         }
 
-        private static Func<T, object> Compile<T>(string expression, Func<string, string> rewrite, bool labelsOnly, out IReadOnlyList<string> labels)
+        public static Func<T, object> Compile<T>(string expression, Func<string, string> rewrite, IEnumerable<ISqlFunction> functions)
+        {
+            return Compile<T>(expression, rewrite ?? (text => text), functions, false, out _);
+        }
+
+        private static Func<T, object> Compile<T>(string expression, Func<string, string> rewrite, IEnumerable<ISqlFunction> functions, bool labelsOnly, out IReadOnlyList<string> labels)
         {
             var alias = Alias.Match(expression);
             if (alias.Success)
@@ -44,7 +49,7 @@ namespace SqlLinq.TimeSeries
             var calls = SqlSyntax.FindCalls(expression, BucketNames);
             if (calls.Count == 0)
             {
-                return labelsOnly ? null : SqlExpression.Compile<T>(rewrite(expression));
+                return labelsOnly ? null : SqlExpression.Compile<T>(rewrite(expression), functions);
             }
             if (!SqlSyntax.IsWholeCall(expression, calls))
             {
@@ -69,7 +74,7 @@ namespace SqlLinq.TimeSeries
 
                     if (!labelsOnly)
                     {
-                        predicates[i] = SqlExpression.Compile<T>(rewrite(item.Groups[1].Value));
+                        predicates[i] = SqlExpression.Compile<T>(rewrite(item.Groups[1].Value), functions);
                     }
                 }
 
@@ -100,7 +105,7 @@ namespace SqlLinq.TimeSeries
                 throw new SqlException("buckets takes (numeric expression, positive finite ceiling, bucket count from 1 to 1000).");
             }
 
-            var value = labelsOnly ? null : SqlExpression.Compile<T>(rewrite(args[0]));
+            var value = labelsOnly ? null : SqlExpression.Compile<T>(rewrite(args[0]), functions);
             var boundaries = new double[count - 1];
             var decimalWidth = ceiling < (double)decimal.MaxValue ? (decimal)ceiling / count : 0;
             var useDecimal = decimalWidth > 0 && (double)decimalWidth == ceiling / count;

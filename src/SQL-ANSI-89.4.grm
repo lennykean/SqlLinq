@@ -56,7 +56,7 @@ Comment Line  = '--'
 !StringLiteral   = '"'{String Ch 1}*'"' | ''{String Ch 2}*''
 StringLiteral   =  ''{String Ch 2}*''
 IntegerLiteral  = {Digit}+
-RealLiteral     = {Digit}+'.'{Digit}+
+RealLiteral     = {Digit}+'.'{Digit}+ | {Digit}+('.'{Digit}+)?[Ee][+-]?{Digit}+
 BooleanLiteral  = 'TRUE' | 'FALSE'
 DateLiteral   = '#'{String Ch 3}*'#'
 
@@ -71,6 +71,8 @@ Id             = ({Letter}{Id Ch Standard}* | '['{Id Ch Extended}+']')  ('.'({Le
 ! =============================================================================
 
 <Query>       ::= <Select Stm>
+                | <Query> UNION <Select Stm>
+                | <Query> UNION ALL <Select Stm>
 
 
 ! =============================================================================
@@ -91,6 +93,7 @@ Id             = ({Letter}{Id Ch Standard}* | '['{Id Ch Extended}+']')  ('.'({Le
                   | Id                
                   | <Aggregate> <Column Alias>
                   | Id <Column Alias>
+                  | <Expression> <Column Alias>
 
 <Column Alias>  ::= AS Id             
 
@@ -110,6 +113,10 @@ Id             = ({Letter}{Id Ch Standard}* | '['{Id Ch Extended}+']')  ('.'({Le
                   | Sum    '(' <Expression> ')'
                   | Var    '(' <Expression> ')'
                   | VarP   '(' <Expression> ')'
+                  | Avg    '(' DISTINCT <Expression> ')'
+                  | Min    '(' DISTINCT <Expression> ')'
+                  | Max    '(' DISTINCT <Expression> ')'
+                  | Sum    '(' DISTINCT <Expression> ')'
 
 <From Clause>   ::= FROM <Id List> <Join Chain>
 
@@ -134,6 +141,8 @@ Id             = ({Letter}{Id Ch Standard}* | '['{Id Ch Extended}+']')  ('.'({Le
 <Order List>    ::= ID <Order Type> ',' <Order List>
                   | ID <Order Type>
             | Function <Order Type> 
+                  | IntegerLiteral <Order Type> ',' <Order List>
+                  | IntegerLiteral <Order Type>
 
 <Order Type>    ::= ASC
                   | DESC
@@ -172,11 +181,26 @@ Id             = ({Letter}{Id Ch Standard}* | '['{Id Ch Extended}+']')  ('.'({Le
                 | <Add Exp> '<'  <Add Exp>
                 | <Add Exp> '<=' <Add Exp>
                 | <Add Exp>
+                | <Add Exp> LIKE StringLiteral ESCAPE StringLiteral
+                | <Add Exp> NOT LIKE StringLiteral ESCAPE StringLiteral
+                | <Add Exp> IN '(' <Select Stm> ')'
+                | <Add Exp> NOT IN '(' <Select Stm> ')'
+                | EXISTS '(' <Select Stm> ')'
+                | <Add Exp> '='  <Quantifier> '(' <Select Stm> ')'
+                | <Add Exp> '<>' <Quantifier> '(' <Select Stm> ')'
+                | <Add Exp> '!=' <Quantifier> '(' <Select Stm> ')'
+                | <Add Exp> '>'  <Quantifier> '(' <Select Stm> ')'
+                | <Add Exp> '>=' <Quantifier> '(' <Select Stm> ')'
+                | <Add Exp> '<'  <Quantifier> '(' <Select Stm> ')'
+                | <Add Exp> '<=' <Quantifier> '(' <Select Stm> ')'
+
+<Quantifier>  ::= ANY
+                | SOME
+                | ALL
 
 <Add Exp>     ::= <Add Exp> '+' <Mult Exp>
                 | <Add Exp> '-' <Mult Exp>
                 | <Mult Exp>
-                | <Aggregate>
 
 <Mult Exp>    ::= <Mult Exp> '*' <Negate Exp> 
                 | <Mult Exp> '/' <Negate Exp>
@@ -194,6 +218,7 @@ Id             = ({Letter}{Id Ch Standard}* | '['{Id Ch Extended}+']')  ('.'({Le
                 | BooleanLiteral  
                 | DateLiteral
                 | Function
+                | <Aggregate>
 
 <Tuple>       ::= '(' <Select Stm> ')'
                 | '(' <Expr List> ')'
@@ -211,3 +236,4 @@ Id             = ({Letter}{Id Ch Standard}* | '['{Id Ch Extended}+']')  ('.'({Le
 
 <Id Member>   ::= Id
                 | Id Id
+                | Id AS Id

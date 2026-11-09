@@ -3,6 +3,7 @@
 namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 {
     [SyntaxNode(RuleConstants.RULE_PREDEXP_NOT_LIKE_STRINGLITERAL)]
+    [SyntaxNode(RuleConstants.RULE_PREDEXP_NOT_LIKE_STRINGLITERAL_ESCAPE_STRINGLITERAL)]
     public class NotLikeNode : LikeNode
     {
         public NotLikeNode()

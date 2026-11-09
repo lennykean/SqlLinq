@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Reflection;
 
 namespace SqlLinq
@@ -10,10 +11,18 @@ namespace SqlLinq
         public static Type GetDictionaryValueType(this Type dictionaryType)
         {
             Debug.Assert(dictionaryType.IsDictionary());
-            Debug.Assert(dictionaryType.IsGenericType);
-            Debug.Assert(dictionaryType.GetGenericArguments().Length == 2);
 
-            return dictionaryType.GetGenericArguments()[1];
+            var dictionary = dictionaryType.IsGenericType ? dictionaryType : dictionaryType.GetInterface(typeof(IDictionary<,>).Name);
+
+            return dictionary.GetGenericArguments()[1];
+        }
+
+        public static IEnumerable<string> ColumnNames(this Type type)
+        {
+            return type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(p => p.GetIndexParameters().Length == 0)
+                .Select(p => p.Name)
+                .Concat(type.GetFields(BindingFlags.Public | BindingFlags.Instance).Select(f => f.Name));
         }
 
         public static Type GetFieldType(this Type t, string field)
@@ -21,8 +30,10 @@ namespace SqlLinq
             if (t.IsDictionary())
                 return t.GetDictionaryValueType();
 
-            if (t.Name.Contains("JoinResultSelector")) // special case for this internal type
+            if (t == typeof(object))
+            {
                 return typeof(object);
+            }
 
             if (t.HasPropertyOrField(field))
                 return t.GetPropertyOrFieldType(field);
@@ -39,7 +50,6 @@ namespace SqlLinq
             if (t.IsTuple())
                 return t.GetGenericArguments()[index];
 
-            Debug.Assert(false);
             return null;
         }
 
@@ -143,6 +153,27 @@ namespace SqlLinq
             return null;
         }
 
+        internal static Type KeyType(this Type type, Type other)
+        {
+            var left = Nullable.GetUnderlyingType(type) ?? type;
+            var right = Nullable.GetUnderlyingType(other) ?? other;
+            if (left.IsValueType && right.IsValueType)
+            {
+                var common = left.Widest(right);
+
+                return common != null && common.IsValueType ? typeof(Nullable<>).MakeGenericType(Nullable.GetUnderlyingType(common) ?? common) : null;
+            }
+
+            return left == right && left != typeof(object) ? left : null;
+        }
+
+        internal static Type Lifted(this Type widest, params Type[] types)
+        {
+            var nullable = types.Any(t => Nullable.GetUnderlyingType(t) != null);
+
+            return nullable && widest.IsValueType && Nullable.GetUnderlyingType(widest) == null ? typeof(Nullable<>).MakeGenericType(widest) : widest;
+        }
+
         public static Type Widest(this Type type, Type other)
         {
             if (type == other)
@@ -157,11 +188,32 @@ namespace SqlLinq
             if (other == typeof(object) && type.IsPrimitive && type != typeof(bool) && type != typeof(char))
                 return typeof(double);
 
+            var underlying = Nullable.GetUnderlyingType(type);
+            if (underlying != null && other == typeof(object))
+            {
+                var boxed = underlying.Widest(other);
+
+                return boxed != null && boxed.IsValueType ? typeof(Nullable<>).MakeGenericType(boxed) : type;
+            }
+
+            var otherUnderlying = Nullable.GetUnderlyingType(other);
+            if ((underlying != null || otherUnderlying != null) && type.IsValueType && other.IsValueType)
+            {
+                var widest = (underlying ?? type).Widest(otherUnderlying ?? other);
+
+                return widest != null && underlying != null && otherUnderlying != null ? typeof(Nullable<>).MakeGenericType(widest) : widest;
+            }
+
             if (!type.IsValueType)
                 return type.WidestNullable(other);
 
             if (type == typeof(double) || other == typeof(double))
                 return typeof(double);
+
+            if (type == typeof(decimal) || other == typeof(decimal))
+            {
+                return typeof(decimal);
+            }
 
             if (type == typeof(long) || other == typeof(long))
                 return typeof(long);

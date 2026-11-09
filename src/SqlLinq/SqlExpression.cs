@@ -13,9 +13,14 @@ namespace SqlLinq
     {
         public static Func<T, object> Compile<T>(string expression)
         {
+            return Compile<T>(expression, null);
+        }
+
+        public static Func<T, object> Compile<T>(string expression, IEnumerable<ISqlFunction> functions)
+        {
             try
             {
-                var parser = new SqlParser();
+                var parser = new SqlParser(functions);
                 if (!parser.Parse("SELECT * FROM this WHERE " + expression))
                 {
                     throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin expression\n\t{1}", parser.ErrorString, expression));

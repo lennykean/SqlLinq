@@ -3,11 +3,15 @@ using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
 
+using SqlLinq.SyntaxTree;
+
 namespace SqlLinq
 {
     public static class SqlSyntax
     {
         private static readonly Regex CallStart = new Regex(@"'[^']*'|\[[^\]]*\]|\b(\w+)\s*\(");
+
+        private static readonly Regex Bracketed = new Regex(@"\[([^\]]*)\]");
 
         public static List<string> SplitTopLevel(string text)
         {
@@ -111,6 +115,11 @@ namespace SqlLinq
         public static string Unbracket(string text)
         {
             return text.Length > 1 && text[0] == '[' && text[text.Length - 1] == ']' ? text[1..^1] : text;
+        }
+
+        internal static Identifier Name(string text)
+        {
+            return new Identifier(Bracketed.Replace(text, "$1"));
         }
 
         public static string Unquote(string text)

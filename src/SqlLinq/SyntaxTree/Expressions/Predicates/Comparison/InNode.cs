@@ -14,14 +14,27 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             Debug.Assert(list.Type.IsArray);
 
             var listType = list.Type.GetElementType();
+            var widest = listType.Widest(left.Type);
+            if (widest != null && widest != listType && list is NewArrayExpression array)
+            {
+                list = Expression.NewArrayInit(widest, array.Expressions.Select(e => e.Type == widest ? e : ExpressionFactory.ConvertTo(e, widest)));
+                listType = widest;
+            }
+
+            var lifted = listType.Lifted(left.Type);
+            if (lifted != listType && list is NewArrayExpression values)
+            {
+                list = Expression.NewArrayInit(lifted, values.Expressions.Select(e => ExpressionFactory.ConvertTo(e, lifted)));
+                listType = lifted;
+            }
+
             if (left.Type != listType)
             {
                 left = ExpressionFactory.ConvertTo(left, listType);
             }
 
             var body = Expression.Call(typeof(Enumerable), "Contains", new Type[] { left.Type }, list, left);
-
-            return Expression.TryCatch(body, Expression.Catch(typeof(Exception), Expression.Constant(false)));
+            return TupleSelectNode.Guard(body);
         }
 
         internal override Expression CreateExpression(ParameterExpression sourceData, ParameterExpression param)

@@ -2,21 +2,35 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Linq.Expressions;
+using System.Reflection;
 using UnitsNet;
 using UnitsNet.Metadata;
 
 namespace SqlLinq.Units
 {
-    public sealed class UnitConversions
+    public sealed class UnitConversions : ISqlFunction
     {
         private static readonly HashSet<string> Names = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "convert" };
         private static readonly CultureInfo English = CultureInfo.GetCultureInfo("en-US");
+        private static readonly MethodInfo ApplyMethod = typeof(UnitConversions).GetMethod(nameof(Apply), BindingFlags.NonPublic | BindingFlags.Static);
 
         private readonly List<QuantityMetadata> _metadata;
 
         public UnitConversions(IEnumerable<QuantityMetadata> metadata)
         {
             _metadata = metadata.Where(m => m.Unit != null).ToList();
+        }
+
+        public string Name => "convert";
+
+        public Expression Compile(IReadOnlyList<SqlArgument> arguments)
+        {
+            var texts = arguments.Select(a => a.Text).ToList();
+            var convert = Conversion(texts);
+            var call = string.Join(", ", texts);
+
+            return Expression.Convert(Expression.Call(ApplyMethod, Expression.Convert(arguments[0].Expression, typeof(object)), Expression.Constant(convert), Expression.Constant(call)), typeof(object));
         }
 
         public string Expand(string text)
@@ -29,19 +43,7 @@ namespace SqlLinq.Units
         private string Rewrite(FunctionCall call)
         {
             var args = SqlSyntax.SplitTopLevel(call.Args);
-
-            if (args.Count != 2 && args.Count != 3)
-            {
-                throw new SqlException("convert takes (column, 'to unit') or (value, 'Kind.from unit', 'to unit').");
-            }
-
-            var fromText = args.Count == 3 ? SqlSyntax.Unquote(args[1]) : null;
-            var toText = SqlSyntax.Unquote(args[args.Count - 1]);
-            var column = _metadata.FirstOrDefault(m => m.Property.Name.Equals(SqlSyntax.Unbracket(args[0]), StringComparison.OrdinalIgnoreCase));
-
-            var convert = column != null
-                ? ColumnConversion(column, fromText, toText)
-                : KindConversion(args[0], fromText, toText);
+            var convert = Conversion(args);
 
             var offset = 0d;
             var scale = 0d;
@@ -64,6 +66,45 @@ namespace SqlLinq.Units
             }
 
             return string.Format(CultureInfo.InvariantCulture, "(({0}) * {1} + {2})", Expand(args[0]), Literal(scale), Literal(offset));
+        }
+
+        private Func<double, double> Conversion(List<string> args)
+        {
+            if (args.Count != 2 && args.Count != 3)
+            {
+                throw new SqlException("convert takes (column, 'to unit') or (value, 'Kind.from unit', 'to unit').");
+            }
+
+            var fromText = args.Count == 3 ? SqlSyntax.Unquote(args[1]) : null;
+            var toText = SqlSyntax.Unquote(args[args.Count - 1]);
+            var column = _metadata.FirstOrDefault(m => m.Property.Name.Equals(SqlSyntax.Unbracket(args[0]), StringComparison.OrdinalIgnoreCase));
+
+            return column != null
+                ? ColumnConversion(column, fromText, toText)
+                : KindConversion(args[0], fromText, toText);
+        }
+
+        private static double? Apply(object value, Func<double, double> convert, string call)
+        {
+            if (value == null)
+            {
+                return null;
+            }
+
+            var code = Type.GetTypeCode(value.GetType());
+            if (code < TypeCode.SByte || code > TypeCode.Decimal)
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "convert({0}) can't read '{1}', which isn't a number.", call, value));
+            }
+
+            try
+            {
+                return convert(Convert.ToDouble(value, CultureInfo.InvariantCulture));
+            }
+            catch (ArithmeticException e)
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "convert({0}) overflowed converting {1}.", call, value), e);
+            }
         }
 
         private static Func<double, double> ColumnConversion(QuantityMetadata column, string fromText, string toText)

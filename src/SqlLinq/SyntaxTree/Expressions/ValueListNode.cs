@@ -1,4 +1,5 @@
-﻿using System.Linq.Expressions;
+﻿using System.Collections.Generic;
+using System.Linq.Expressions;
 using System.Linq;
 
 using SqlLinq.SyntaxTree.Expressions.Literals;
@@ -15,9 +16,33 @@ namespace SqlLinq.SyntaxTree.Expressions
 
         internal override Expression CreateExpression(ParameterExpression sourceData, ParameterExpression param)
         {
-            var type = FindDescendants<LiteralNode>().First().Type; // the first literal defines the type of the list
+            var values = Values().Where(v => !(v is NullLiteral)).Select(v => v.CreateExpression(sourceData, param)).ToList();
+            if (values.Count == 0)
+            {
+                return Expression.NewArrayInit(typeof(object));
+            }
 
-            return Expression.NewArrayInit(type, FindDescendants<LiteralNode>().Select(l => l.CreateExpression(sourceData, param)));
+            var type = values.Select(v => v.Type).Aggregate((widest, next) => widest.Widest(next) ?? typeof(object));
+
+            return Expression.NewArrayInit(type, values.Select(v => v.Type == type ? v : ExpressionFactory.ConvertTo(v, type)));
+        }
+
+        private IEnumerable<ExpressionNode> Values()
+        {
+            foreach (var child in Children.OfType<ExpressionNode>())
+            {
+                if (child is ValueListNode list)
+                {
+                    foreach (var value in list.Values())
+                    {
+                        yield return value;
+                    }
+                }
+                else
+                {
+                    yield return child;
+                }
+            }
         }
     }
 }

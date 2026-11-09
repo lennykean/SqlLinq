@@ -145,7 +145,6 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [Ignore("Known bug https://github.com/dkackman/SqlLinq/issues/3")]
         public void SumOnExpando()
         {
             var customers = new List<dynamic>();

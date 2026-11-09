@@ -72,7 +72,7 @@ namespace SqlLinq.UnitTests
 
             // Assert
             Assert.AreEqual(-2.5, doubleResult);
-            Assert.AreEqual(-2.0, intResult);
+            Assert.AreEqual(-2, intResult);
             Assert.IsNull(nullResult);
         }
 

@@ -12,6 +12,11 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 
         protected override Expression CreateChildExpression(Expression left, Expression right)
         {
+            if (left.Type == typeof(object) && right.Type == typeof(object))
+            {
+                return Expression.Not(Expression.Call(typeof(EqualityNode), nameof(EqualityNode.ValuesEqual), null, left, right));
+            }
+
             return Expression.NotEqual(left, right);
         }
     }

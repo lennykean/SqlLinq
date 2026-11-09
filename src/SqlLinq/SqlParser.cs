@@ -1,4 +1,7 @@
-﻿using System.IO;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Text;
 using System.Diagnostics;
 using System.Globalization;
@@ -6,15 +9,27 @@ using System.Globalization;
 using GoldParser;
 
 using SqlLinq.SyntaxTree;
+using SqlLinq.SyntaxTree.Aggregates;
+using SqlLinq.SyntaxTree.Expressions;
 
 namespace SqlLinq
 {
     public class SqlParser
     {
+        private const string Placeholder = "$sqlfn";
+
+        private readonly Dictionary<string, ISqlFunction> _functions;
+
         private Parser m_parser;
 
         public SqlParser()
         {
+            _functions = new Dictionary<string, ISqlFunction>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        internal SqlParser(IEnumerable<ISqlFunction> functions)
+        {
+            _functions = (functions ?? Enumerable.Empty<ISqlFunction>()).ToDictionary(f => f.Name, StringComparer.OrdinalIgnoreCase);
         }
 
         public string ErrorString { get; private set; }
@@ -49,8 +64,66 @@ namespace SqlLinq
         {
             Debug.Assert(string.IsNullOrEmpty(source) == false);
 
-            using (TextReader reader = new StringReader(source))
-                return Parse(reader);
+            var calls = _functions.Count == 0 ? new List<FunctionCall>() : SqlSyntax.FindCalls(source, _functions.Keys);
+            var text = SqlSyntax.ReplaceCalls(source, calls, i => "[" + Placeholder + i.ToString(CultureInfo.InvariantCulture) + "]");
+
+            using (TextReader reader = new StringReader(text))
+            {
+                if (!Parse(reader))
+                {
+                    return false;
+                }
+            }
+
+            foreach (var node in SyntaxTree.FindDescendants<NodeWithId>())
+            {
+                if (node.Id.LookupId.StartsWith(Placeholder, StringComparison.Ordinal))
+                {
+                    var call = calls[int.Parse(node.Id.LookupId.Substring(Placeholder.Length), CultureInfo.InvariantCulture)];
+                    node.Function = _functions[call.Name];
+                    node.Arguments = Arguments(call);
+                    foreach (var argument in node.Arguments)
+                    {
+                        argument.Node.Parent = node;
+                    }
+                }
+            }
+
+            var columns = SyntaxTree.FindDescendants<ColumnSource>().Where(c => !(c is AggregateNode) && !(c is ComputedColumn));
+            foreach (var column in columns.Where(c => c.Id.LookupId.StartsWith(Placeholder, StringComparison.Ordinal)))
+            {
+                var call = calls[int.Parse(column.Id.LookupId.Substring(Placeholder.Length), CultureInfo.InvariantCulture)];
+                column.Function = _functions[call.Name];
+                column.Arguments = Arguments(call);
+                foreach (var argument in column.Arguments)
+                {
+                    argument.Node.Parent = column;
+                }
+            }
+
+            return true;
+        }
+
+        private List<(string Text, ExpressionNode Node)> Arguments(FunctionCall call)
+        {
+            var arguments = new List<(string Text, ExpressionNode Node)>();
+            if (call.Args.Trim().Length == 0)
+            {
+                return arguments;
+            }
+
+            foreach (var text in SqlSyntax.SplitTopLevel(call.Args))
+            {
+                var parser = new SqlParser(_functions.Values);
+                if (!parser.Parse("SELECT * FROM this WHERE " + text))
+                {
+                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin argument\n\t{1}\nof {2}()", parser.ErrorString, text.Trim(), call.Name));
+                }
+
+                arguments.Add((text.Trim(), ((SelectNode)parser.SyntaxTree).WhereClause.FindChild<ExpressionNode>()));
+            }
+
+            return arguments;
         }
 
         public bool Parse(TextReader sourceReader)

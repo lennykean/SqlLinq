@@ -10,112 +10,72 @@ namespace SqlLinq
 {
     static class ExpressionFactory
     {
-        public static Expression<Func<TSource, TResult>> CreateIdentitySelector<TSource, TResult>()
+        public static Expression CreateResult(Type tResult, IList<string> names, IList<Expression> values)
         {
-            var item = Expression.Parameter(typeof(TSource), "item");
-
-            return Expression.Lambda<Func<TSource, TResult>>(item, item);
+            return CreateResult(tResult, names, values, false);
         }
 
-        public static Expression<Func<TSource, TResult>> CreateSelectIntoDictionary<TSource, TResult>(IEnumerable<string> sourceFields, IEnumerable<string> resultFields)
+        public static Expression CreateResult(Type tResult, IList<string> names, IList<Expression> values, bool named)
         {
-            var item = Expression.Parameter(typeof(TSource), "item");
-            var bindings = CreateDictionaryBindings<TResult>(item, sourceFields, resultFields);
-
-            var constructor = typeof(TResult).GetConstructor(new Type[] { typeof(StringComparer) });
-            if (constructor == null)
+            if (tResult.IsDictionary())
             {
-                Debug.Assert(typeof(TResult).IsGenericType);
-                Debug.Assert(typeof(TResult).GetGenericArguments().Length == 2);
-                Debug.Assert(typeof(TResult).GetGenericArguments()[0] == typeof(string));
+                var constructor = tResult.GetConstructor(new[] { typeof(StringComparer) })
+                    ?? typeof(Dictionary<,>).MakeGenericType(tResult.GetGenericArguments()).GetConstructor(new[] { typeof(StringComparer) });
 
-                Type def = typeof(Dictionary<,>).MakeGenericType(typeof(TResult).GetGenericArguments());
-                constructor = def.GetConstructor(new Type[] { typeof(StringComparer) });
+                return CreateDictionaryInit(Expression.New(constructor, Expression.Constant(StringComparer.OrdinalIgnoreCase)), tResult, names, values);
             }
-            Debug.Assert(constructor != null);
 
-            var _new = Expression.New(constructor, Expression.Constant(StringComparer.OrdinalIgnoreCase));
-            return Expression.Lambda<Func<TSource, TResult>>(Expression.ListInit(_new, bindings), item);
+            if (values.Count == 1 && !tResult.IsTuple() && !(named && tResult == typeof(object)))
+            {
+                return Converted(values[0], tResult);
+            }
+
+            if (tResult == typeof(object))
+            {
+                return CreateDictionaryInit(Expression.New(typeof(ExpandoObject)), typeof(IDictionary<string, object>), names, values);
+            }
+
+            if (tResult.HasEmptyConstructor())
+            {
+                var bindings = names.Select((name, i) => Expression.Bind(tResult.GetPropertyOrField(name), Converted(values[i], tResult.GetPropertyOrFieldType(name))));
+
+                return Expression.MemberInit(Expression.New(tResult), bindings);
+            }
+
+            var types = names.Select((name, i) => tResult.GetFieldType(name, i)).ToArray();
+            var create = types.All(t => t != null) ? tResult.GetConstructor(types) : null;
+            if (create == null)
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} has no constructor that takes the {1} columns of the select list.", tResult.Name, names.Count));
+            }
+
+            return Expression.New(create, values.Select((value, i) => Converted(value, types[i])));
         }
 
-        public static Expression<Func<TSource, TResult>> CreateSelectIntoExpando<TSource, TResult>(IEnumerable<string> sourceFields, IEnumerable<string> resultFields)
+        private static ListInitExpression CreateDictionaryInit(NewExpression create, Type dictionaryType, IList<string> names, IList<Expression> values)
         {
-            var item = Expression.Parameter(typeof(TSource), "item");
-            var bindings = CreateDictionaryBindings<IDictionary<string, object>>(item, sourceFields, resultFields);
+            var add = dictionaryType.GetMethod("Add", dictionaryType.GetGenericArguments());
+            var valueType = dictionaryType.GetDictionaryValueType();
 
-            var _new = Expression.New(typeof(ExpandoObject));
-            return Expression.Lambda<Func<TSource, TResult>>(Expression.ListInit(_new, bindings), item);
+            return Expression.ListInit(create, names.Select((name, i) => Expression.ElementInit(add, Expression.Constant(name), Converted(values[i], valueType))));
         }
 
-        private static IEnumerable<ElementInit> CreateDictionaryBindings<TResult>(ParameterExpression item, IEnumerable<string> sourceFields, IEnumerable<string> resultFields)
+        private static Expression Converted(Expression value, Type type)
         {
-            // loop through all of the result fields and generate an expression that will 
-            // add a new property to the result expando object using its IDictionary interface
-            var addMethod = typeof(TResult).GetMethod("Add", typeof(TResult).GetGenericArguments());
-
-            return
-                from field in sourceFields.Zip(resultFields, (source, result) => new Tuple<string, string>(source, result))
-                select Expression.ElementInit(
-                    addMethod,
-                    Expression.Constant(field.Item2),
-                    CreateFieldSelector(item, field.Item1, typeof(TResult).GetDictionaryValueType()));
+            return value.Type == type ? value : ConvertTo(value, type);
         }
 
-        public static Expression<Func<TSource, TResult>> CreateSelectIntoObjectMembers<TSource, TResult>(IEnumerable<string> sourceFields, IEnumerable<string> resultFields)
-        {
-            ParameterExpression item = Expression.Parameter(typeof(TSource), "item");
-
-            var bindings =
-                from field in sourceFields.Zip(resultFields, (source, result) => new Tuple<string, string>(source, result))
-                select Expression.Bind(
-                    typeof(TResult).GetPropertyOrField(field.Item2),
-                    CreateFieldSelector(item, field.Item1, typeof(TResult).GetFieldType(field.Item2)));
-
-            return Expression.Lambda<Func<TSource, TResult>>(Expression.MemberInit(Expression.New(typeof(TResult)), bindings), item);
-        }
-
-        public static Expression<Func<TSource, TResult>> CreateSelectIntoObjectConstructor<TSource, TResult>(IEnumerable<string> sourceFields, IEnumerable<Type> resultTypes)
-        {
-            var item = Expression.Parameter(typeof(TSource), "item");
-            var _new = CreateNewObjectExpression(typeof(TResult), sourceFields, resultTypes, item);
-
-            return Expression.Lambda<Func<TSource, TResult>>(_new, item);
-        }
-
-        public static LambdaExpression CreateSelectIntoObjectConstructor<TSource>(Type tResult, IEnumerable<string> sourceFields, IEnumerable<Type> resultTypes)
-        {
-            var item = Expression.Parameter(typeof(TSource), "item");
-            var _new = CreateNewObjectExpression(tResult, sourceFields, resultTypes, item);
-
-            return Expression.Lambda(_new, item);
-        }
-
-        private static NewExpression CreateNewObjectExpression(Type tResult, IEnumerable<string> sourceFields, IEnumerable<Type> resultTypes, ParameterExpression item)
-        {
-            var zip = sourceFields.Zip(resultTypes, (s, t) => new Tuple<string, Type>(s, t));
-            var bindings = zip.Select(tuple => CreateFieldSelector(item, tuple.Item1, tuple.Item2));   // the values that will intialize a TResult
-
-            var constructor = tResult.GetConstructor(resultTypes.ToArray());  // the constructor for a new TResult
-            Debug.Assert(constructor != null);
-
-            return Expression.New(constructor, bindings);
-        }
-
-        public static Expression<Func<TSource, TResult>> CreateSelectSingleField<TSource, TResult>(string propertyName)
-        {
-            Debug.Assert(!string.IsNullOrEmpty(propertyName));
-
-            var item = Expression.Parameter(typeof(TSource), "item");
-
-            return Expression.Lambda<Func<TSource, TResult>>(CreateFieldSelector(item, propertyName, typeof(TResult)), item);
-        }
-
-        public static Expression CreateFieldSelector(ParameterExpression item, string propertyName)
+        public static Expression CreateFieldSelector(Expression item, string propertyName)
         {
             // source type is dynamic
             if (item.Type == typeof(object))
             {
                 return Expression.Dynamic(new DynamicGetMemberBinder(propertyName), item.Type, item);
+            }
+
+            if (item.Type == typeof(ExpandoObject))
+            {
+                return Expression.Dynamic(new DynamicGetMemberBinder(propertyName), typeof(object), item);
             }
 
             // source type is dictionary
@@ -126,7 +86,13 @@ namespace SqlLinq
             }
 
             // source type is a class or stuct
-            return Expression.PropertyOrField(item, propertyName);
+            var member = item.Type.GetPropertyOrField(propertyName);
+            if (member == null)
+            {
+                throw new ArgumentException(string.Format(CultureInfo.CurrentCulture, "'{0}' is not a member of type '{1}'", propertyName, item.Type), nameof(propertyName));
+            }
+
+            return Expression.MakeMemberAccess(item, member);
         }
 
         public static Expression CreateFieldSelector(ParameterExpression item, string propertyName, Type returnType)
@@ -141,6 +107,24 @@ namespace SqlLinq
             return selector;
         }
 
+        internal static ConstantExpression Nothing(Type type)
+        {
+            return Expression.Constant(type.IsValueType && Nullable.GetUnderlyingType(type) == null ? Activator.CreateInstance(type) : null, type);
+        }
+
+        internal static Expression ToKey(Expression value, Type key)
+        {
+            var underlying = Nullable.GetUnderlyingType(key);
+            if (value.Type == key)
+            {
+                return value;
+            }
+
+            return underlying != null && Nullable.GetUnderlyingType(value.Type) == null && value.Type != underlying
+                ? Expression.Convert(Expression.Convert(value, underlying), key)
+                : Expression.Convert(value, key);
+        }
+
         public static Expression ConvertTo(Expression expression, Type type)
         {
             if (expression.Type == typeof(object) && type.IsValueType && Nullable.GetUnderlyingType(type) == null)
@@ -148,7 +132,18 @@ namespace SqlLinq
                 return Expression.Convert(Expression.Call(typeof(ExpressionFactory), nameof(ChangeTypeExact), null, expression, Expression.Constant(type)), type);
             }
 
+            var underlying = Nullable.GetUnderlyingType(type);
+            if (expression.Type == typeof(object) && underlying != null)
+            {
+                return Expression.Convert(Expression.Call(typeof(ExpressionFactory), nameof(ChangeTypeExactOrNull), null, expression, Expression.Constant(underlying)), type);
+            }
+
             return Expression.Convert(expression, type);
+        }
+
+        private static object ChangeTypeExactOrNull(object value, Type type)
+        {
+            return value == null ? null : ChangeTypeExact(value, type);
         }
 
         private static object ChangeTypeExact(object value, Type type)

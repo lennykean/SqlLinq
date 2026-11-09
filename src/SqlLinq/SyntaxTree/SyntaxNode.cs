@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Collections.Generic;
+using System.Text;
 using System.Xml.Linq;
 using System.Globalization;
 
@@ -39,6 +40,25 @@ namespace SqlLinq.SyntaxTree
             else
             {
                 builder.Append("root");
+            }
+        }
+
+        internal SelectNode EnclosingSelect()
+        {
+            var node = Parent;
+            while (node != null && !(node is SelectNode))
+            {
+                node = node.Parent;
+            }
+
+            return node as SelectNode;
+        }
+
+        internal IEnumerable<NonTerminalNode> AncestorsBelow(SyntaxNode top)
+        {
+            for (var node = Parent; node != null && node != top; node = node.Parent)
+            {
+                yield return node;
             }
         }
 

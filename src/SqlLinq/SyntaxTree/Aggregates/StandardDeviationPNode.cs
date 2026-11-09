@@ -12,5 +12,13 @@ namespace SqlLinq.SyntaxTree.Aggregates
         {
             Name = "StandardDeviationP";
         }
+
+        internal override bool Sample
+        {
+            get
+            {
+                return false;
+            }
+        }
     }
 }

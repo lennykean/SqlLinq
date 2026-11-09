@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using System.Linq.Expressions;
 
 namespace SqlLinq.SyntaxTree.Aggregates
 {
@@ -22,6 +23,11 @@ namespace SqlLinq.SyntaxTree.Aggregates
             {
                 return true;
             }
+        }
+
+        internal override Expression GetCallExpression(Type tSource, Expression param)
+        {
+            return Expression.Call(typeof(Enumerable), nameof(Enumerable.Count), new[] { tSource }, param);
         }
 
         protected override Type EvaluatatorType

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace SqlLinq.TimeSeries
 {
@@ -15,6 +16,7 @@ namespace SqlLinq.TimeSeries
 
         private readonly Func<T, TimeSpan> _time;
         private readonly Func<string, string> _rewrite;
+        private readonly IEnumerable<ISqlFunction> _functions;
         private readonly Func<T, object> _where;
         private readonly List<(string Text, string Name, Func<T, object> Value)> _facets = new List<(string, string, Func<T, object>)>();
         private readonly List<(string Name, Aggregate<T> Aggregate)> _aggregates = new List<(string, Aggregate<T>)>();
@@ -26,9 +28,15 @@ namespace SqlLinq.TimeSeries
         private readonly int? _limit;
 
         public TimeSeriesQuery(string nrql, Func<T, TimeSpan> time, Func<string, string> rewrite = null)
+            : this(nrql, time, rewrite, null)
+        {
+        }
+
+        public TimeSeriesQuery(string nrql, Func<T, TimeSpan> time, Func<string, string> rewrite, IEnumerable<ISqlFunction> functions)
         {
             _time = time ?? throw new ArgumentNullException(nameof(time));
             _rewrite = rewrite ?? (expression => expression);
+            _functions = functions;
 
             var clauses = SplitClauses(nrql, out var head);
             var select = SelectFrom.Match(head);
@@ -43,7 +51,7 @@ namespace SqlLinq.TimeSeries
                 {
                     var alias = Alias.Match(facet);
                     var text = alias.Success ? alias.Groups[1].Value.Trim() : facet;
-                    _facets.Add((text, FacetExpression.Name(facet), FacetExpression.Compile<T>(facet, _rewrite)));
+                    _facets.Add((text, FacetExpression.Name(facet), FacetExpression.Compile<T>(facet, _rewrite, _functions)));
                 }
             }
 
@@ -118,7 +126,19 @@ namespace SqlLinq.TimeSeries
 
         public IList<IDictionary<string, object>> Evaluate(IEnumerable<T> source)
         {
-            var all = source.Select(item => (Time: _time(item), Item: item)).ToList();
+            return Evaluate(source, CancellationToken.None);
+        }
+
+        public IList<IDictionary<string, object>> Evaluate(IEnumerable<T> source, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var all = source
+                .Select(item =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return (Time: _time(item), Item: item);
+                })
+                .ToList();
             var result = new List<IDictionary<string, object>>();
             if (all.Count == 0)
             {
@@ -129,11 +149,11 @@ namespace SqlLinq.TimeSeries
             var from = _since?.Resolve(end) ?? all.Min(r => r.Time);
             var to = _until?.Resolve(end) ?? end;
 
-            Run(all, from, to, _compare == null ? null : "current", result);
+            Run(all, from, to, _compare == null ? null : "current", result, cancellationToken);
 
             if (_compare != null)
             {
-                Run(all, from - _compare.Value, to - _compare.Value, "previous", result);
+                Run(all, from - _compare.Value, to - _compare.Value, "previous", result, cancellationToken);
             }
 
             return result;
@@ -141,7 +161,7 @@ namespace SqlLinq.TimeSeries
 
         private Func<T, object> Compile(string expression)
         {
-            return SqlExpression.Compile<T>(_rewrite(expression));
+            return SqlExpression.Compile<T>(_rewrite(expression), _functions);
         }
 
         private static Dictionary<string, string> SplitClauses(string nrql, out string head)
@@ -217,7 +237,7 @@ namespace SqlLinq.TimeSeries
             }
 
             var inner = calls.Select(c => factory.Create(c.Name, c.Args)).ToList();
-            var outer = SqlExpression.Compile<IDictionary<string, double>>(_rewrite(SqlSyntax.ReplaceCalls(text, calls, i => "agg" + i)));
+            var outer = SqlExpression.Compile<IDictionary<string, double>>(_rewrite(SqlSyntax.ReplaceCalls(text, calls, i => "agg" + i)), _functions);
 
             object combined(IReadOnlyList<(TimeSpan Time, T Item)> rows, TimeSpan window)
             {
@@ -238,7 +258,7 @@ namespace SqlLinq.TimeSeries
             _aggregates.Add((name, combined));
         }
 
-        private void Run(List<(TimeSpan Time, T Item)> all, TimeSpan from, TimeSpan to, string comparison, List<IDictionary<string, object>> result)
+        private void Run(List<(TimeSpan Time, T Item)> all, TimeSpan from, TimeSpan to, string comparison, List<IDictionary<string, object>> result, CancellationToken cancellationToken)
         {
             var rows = all.Where(r => r.Time >= from && r.Time < to).ToList();
             if (_where != null)
@@ -295,6 +315,7 @@ namespace SqlLinq.TimeSeries
 
             for (var b = first; b <= last; b++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 for (var i = 0; i < groups.Count; i++)
                 {
                     result.Add(CreateRow(groups[i].Key, buckets[i][b].ToList(), TimeSpan.FromTicks(ticks), comparison, b * ticks));

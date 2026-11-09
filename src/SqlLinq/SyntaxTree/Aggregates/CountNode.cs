@@ -29,9 +29,38 @@ namespace SqlLinq.SyntaxTree.Aggregates
 
         protected override MethodCallExpression GetPropertyOrFieldAggregateExpression(Type tSource, Expression param)
         {
-            LambdaExpression lambda = ExpressionFactory.CreateFieldSelectorLambda(tSource, SourceFieldName);
+            var lambda = CreateSelector(tSource, param);
+            var values = Expression.Call(typeof(Enumerable), nameof(Enumerable.Select), new[] { tSource, lambda.ReturnType }, param, lambda);
 
-            return Expression.Call(EvaluatatorType, Name, new Type[] { tSource, tSource.GetFieldType(SourceFieldName) }, param, lambda);
+            return Counted(values, lambda.ReturnType);
+        }
+
+        internal override Expression GetCallExpression(Type tSource, Expression param)
+        {
+            return DoNotDereferenceFields ? Counted(param, tSource) : GetPropertyOrFieldAggregateExpression(tSource, param);
+        }
+
+        internal virtual bool CountsDistinct
+        {
+            get
+            {
+                return false;
+            }
+        }
+
+        private MethodCallExpression Counted(Expression values, Type type)
+        {
+            if (!type.IsValueType || Nullable.GetUnderlyingType(type) != null)
+            {
+                values = Known(values, known => Expression.Call(typeof(Enumerable), nameof(Enumerable.Where), new[] { type }, values, known));
+            }
+
+            if (CountsDistinct)
+            {
+                values = Expression.Call(typeof(Enumerable), nameof(Enumerable.Distinct), new[] { type }, values);
+            }
+
+            return Expression.Call(typeof(Enumerable), nameof(Enumerable.Count), new[] { type }, values);
         }
     }
 }

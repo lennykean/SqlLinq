@@ -13,7 +13,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 
         protected override Expression CreateChildExpression(Expression left, Expression right)
         {
-            return Expression.GreaterThan(left, right);
+            return Compare(left, right, Expression.GreaterThan);
         }
     }
 }

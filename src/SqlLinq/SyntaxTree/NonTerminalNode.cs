@@ -26,6 +26,8 @@ namespace SqlLinq.SyntaxTree
 
         internal Rule Rule { get; set; }
 
+        internal IReadOnlyList<SyntaxNode> Children => m_children;
+
         /// <summary>
         /// This method is used during parsing to enforce syntax rules not expressed in the grammar
         /// </summary>
@@ -59,6 +61,7 @@ namespace SqlLinq.SyntaxTree
 
         internal protected IEnumerable<T> FindDescendants<T>() where T : NonTerminalNode
         {
+            SqlException.ThrowIfNestedTooDeeply();
             var list = new List<T>();
             foreach (NonTerminalNode node in m_children.OfType<NonTerminalNode>())
             {
