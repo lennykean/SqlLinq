@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using SqlLinq.SyntaxTree.Expressions;
 
 namespace SqlLinq.UnitTests
 {
@@ -47,17 +48,18 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        public void ExtensionQueryRunsTheRewrittenSql()
+        public void RewrittenSyntaxTreeRunsTheRewrittenQuery()
         {
             // Arrange
             var source = TestData.GetPeople();
+            var heavy = SqlSyntaxTree.ParseExpression("Weight > 150").Root;
 
             // Act
-            var result = source.ExtensionQuery(
-                "SELECT * FROM this WHERE heavy()",
-                sql => sql.Replace("heavy()", "Weight > 150", StringComparison.Ordinal));
+            var rewritten = SqlSyntaxTree.Parse("SELECT * FROM this WHERE Heavy").Replace(n => n is NodeWithId id && id.Id.LookupId == "Heavy" ? heavy : null);
+            var result = rewritten.Compile<Person, Person>().Execute(source);
 
             // Assert
+            Assert.AreEqual("SELECT * FROM this WHERE Weight > 150", rewritten.Root.ToSql());
             CollectionAssert.AreEqual(source.Where(p => p.Weight > 150).ToList(), result.ToList());
         }
     }

@@ -14,6 +14,8 @@ namespace SqlLinq.SyntaxTree.Expressions
         {
         }
 
+        internal string Source { get; set; }
+
         public Func<IEnumerable<T>, T, bool> CreatePredicateFunction<T>(ParameterExpression sourceData)
         {
             var param = Expression.Parameter(typeof(T), "arg");

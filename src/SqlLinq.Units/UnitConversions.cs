@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using SqlLinq.SyntaxTree.Expressions;
 using UnitsNet;
 using UnitsNet.Metadata;
 
@@ -11,7 +12,6 @@ namespace SqlLinq.Units
 {
     public sealed class UnitConversions : ISqlFunction
     {
-        private static readonly HashSet<string> Names = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "convert" };
         private static readonly CultureInfo English = CultureInfo.GetCultureInfo("en-US");
         private static readonly MethodInfo ApplyMethod = typeof(UnitConversions).GetMethod(nameof(Apply), BindingFlags.NonPublic | BindingFlags.Static);
 
@@ -33,16 +33,19 @@ namespace SqlLinq.Units
             return Expression.Convert(Expression.Call(ApplyMethod, Expression.Convert(arguments[0].Expression, typeof(object)), Expression.Constant(convert), Expression.Constant(call)), typeof(object));
         }
 
-        public string Expand(string text)
+        public ExpressionNode Expand(ExpressionNode expression)
         {
-            var calls = SqlSyntax.FindCalls(text, Names);
+            if (expression == null)
+            {
+                throw new ArgumentNullException(nameof(expression));
+            }
 
-            return SqlSyntax.ReplaceCalls(text, calls, i => Rewrite(calls[i]));
+            return (ExpressionNode)expression.Replace(n => n is NodeWithId call && Name.Equals(call.FunctionName, StringComparison.OrdinalIgnoreCase) ? Rewrite(call) : null);
         }
 
-        private string Rewrite(FunctionCall call)
+        private ExpressionNode Rewrite(NodeWithId call)
         {
-            var args = SqlSyntax.SplitTopLevel(call.Args);
+            var args = call.Arguments.Select(a => a.Text).ToList();
             var convert = Conversion(args);
 
             var offset = 0d;
@@ -62,10 +65,13 @@ namespace SqlLinq.Units
             }
             catch (Exception e)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a linear conversion, which convert doesn't support.", call.Args), e);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a linear conversion, which convert doesn't support.", string.Join(", ", args)), e);
             }
 
-            return string.Format(CultureInfo.InvariantCulture, "(({0}) * {1} + {2})", Expand(args[0]), Literal(scale), Literal(offset));
+            var value = Expand(call.Arguments[0].Expression ?? throw call.Arguments[0].Error);
+            var template = (ExpressionNode)SqlSyntaxTree.ParseExpression(string.Format(CultureInfo.InvariantCulture, "((value) * {0} + {1})", Literal(scale), Literal(offset))).Root;
+
+            return (ExpressionNode)template.Replace(n => n is NodeWithId id && id.Function == null && id.Id.LookupId == "value" ? value : null);
         }
 
         private Func<double, double> Conversion(List<string> args)

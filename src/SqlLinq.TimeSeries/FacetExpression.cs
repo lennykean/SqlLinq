@@ -2,14 +2,17 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Text.RegularExpressions;
+
+using SqlLinq.SyntaxTree.Expressions;
 
 namespace SqlLinq.TimeSeries
 {
     public static class FacetExpression
     {
-        private static readonly HashSet<string> BucketNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "buckets", "cases" };
-        private static readonly Regex Alias = new Regex(@"^(.+\))\s+AS\s+(\[[^\]]+\]|\w+)\s*$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        internal static readonly HashSet<string> BucketNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "buckets", "cases" };
+        private static readonly Regex Alias = new Regex(@"^(.+)\s+AS\s+(\[[^\]]+\]|\w+)\s*$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
         private static readonly Regex Case = new Regex(@"^(.+)\s+AS\s+'((?:''|[^'])*)'\s*$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
         public static string Name(string expression)
@@ -21,76 +24,82 @@ namespace SqlLinq.TimeSeries
 
         public static IReadOnlyList<string> Labels(string expression)
         {
-            Compile<object>(expression, null, null, true, out var labels);
+            var facet = Read(expression, 0, expression, null);
+            if (facet.Labels == null && facet.Error != null && !facet.Plain)
+            {
+                throw facet.Error;
+            }
 
-            return labels;
+            return facet.Labels;
         }
 
-        public static Func<T, object> Compile<T>(string expression, Func<string, string> rewrite = null)
+        public static Func<T, object> Compile<T>(string expression, Func<ExpressionNode, ExpressionNode> rewrite = null)
         {
             return Compile<T>(expression, rewrite, null);
         }
 
-        public static Func<T, object> Compile<T>(string expression, Func<string, string> rewrite, IEnumerable<ISqlFunction> functions)
+        public static Func<T, object> Compile<T>(string expression, Func<ExpressionNode, ExpressionNode> rewrite, IEnumerable<ISqlFunction> functions)
         {
-            return Compile<T>(expression, rewrite ?? (text => text), functions, false, out _);
+            var facet = Read(expression, 0, expression, functions);
+            if (facet.Error != null)
+            {
+                throw facet.Error;
+            }
+
+            return Lambda<T>(TimeSeriesSyntaxTree.Rewritten(facet, e => rewrite?.Invoke(e) ?? e)).Compile();
         }
 
-        private static Func<T, object> Compile<T>(string expression, Func<string, string> rewrite, IEnumerable<ISqlFunction> functions, bool labelsOnly, out IReadOnlyList<string> labels)
+        internal static TimeSeriesExpression Read(string text, int start, string facet, IEnumerable<ISqlFunction> functions)
         {
-            var alias = Alias.Match(expression);
-            if (alias.Success)
+            var alias = Alias.Match(facet);
+            var expression = alias.Success ? alias.Groups[1].Value.TrimEnd() : facet;
+            var syntax = SqlSyntaxTree.ParseExpression(text, start, expression.Length, TimeSeriesFunction.With(BucketNames, functions));
+            var item = new TimeSeriesExpression(expression, alias.Success ? SqlSyntax.Unbracket(alias.Groups[2].Value) : null, Name(facet), start, syntax);
+            if (syntax.Root == null)
             {
-                expression = alias.Groups[1].Value;
+                var error = TimeSeriesSyntaxTree.Unbalanced(syntax.Error, expression);
+                var unclosed = !ReferenceEquals(error, syntax.Error) && BucketNames.Any(n => string.Compare(text, error.Start, n, 0, n.Length, StringComparison.OrdinalIgnoreCase) == 0);
+                item.Plain = !TimeSeriesFunction.CallsAny(expression, BucketNames);
+                item.Error = item.Plain || unclosed ? error : new SqlException("FACET buckets() or cases() must be a complete facet expression.", start, expression.Length);
+
+                return item;
             }
 
-            labels = null;
-
-            var calls = SqlSyntax.FindCalls(expression, BucketNames);
+            var calls = TimeSeriesFunction.Calls((ExpressionNode)syntax.Root, BucketNames);
             if (calls.Count == 0)
             {
-                return labelsOnly ? null : SqlExpression.Compile<T>(rewrite(expression), functions);
-            }
-            if (!SqlSyntax.IsWholeCall(expression, calls))
-            {
-                throw new SqlException("FACET buckets() or cases() must be a complete facet expression.");
+                item.Plain = true;
+                item.Error = syntax.Error;
+
+                return item;
             }
 
-            var args = SqlSyntax.SplitTopLevel(calls[0].Args);
-            if (calls[0].Name.Equals("cases", StringComparison.OrdinalIgnoreCase))
+            if (calls.Count != 1 || calls[0] != syntax.Root || expression.Trim().Length != expression.Length)
             {
-                var predicates = new Func<T, object>[args.Count];
-                var caseLabels = new string[args.Count];
+                item.Error = new SqlException("FACET buckets() or cases() must be a complete facet expression.", start, expression.Length);
 
-                for (var i = 0; i < args.Count; i++)
+                return item;
+            }
+
+            var arguments = calls[0].Arguments;
+            var args = arguments.Count == 0 ? new List<string> { string.Empty } : arguments.Select(a => a.Text).ToList();
+            if (calls[0].FunctionName.Equals("cases", StringComparison.OrdinalIgnoreCase))
+            {
+                var cases = args.Select(a => Case.Match(a)).ToList();
+                if (cases.Any(c => !c.Success))
                 {
-                    var item = Case.Match(args[i]);
-                    if (!item.Success)
-                    {
-                        throw new SqlException("cases takes conditions with labels, e.g. cases(RPM < 2000 AS 'Low', RPM >= 2000 AS 'High').");
-                    }
+                    item.Error = new SqlException("cases takes conditions with labels, e.g. cases(RPM < 2000 AS 'Low', RPM >= 2000 AS 'High').", start, expression.Length);
 
-                    caseLabels[i] = item.Groups[2].Value.Replace("''", "'");
-
-                    if (!labelsOnly)
-                    {
-                        predicates[i] = SqlExpression.Compile<T>(rewrite(item.Groups[1].Value), functions);
-                    }
+                    return item;
                 }
 
-                labels = caseLabels.Distinct().ToArray();
+                item.Labels = cases.Select(c => c.Groups[2].Value.Replace("''", "'")).Distinct().ToArray();
+                item.CaseLabels = cases.Select(c => c.Groups[2].Value.Replace("''", "'")).ToArray();
+                item.CaseTrees = arguments.Select((a, i) => SqlSyntaxTree.ParseExpression(text, a.Start, cases[i].Groups[1].Length, functions)).ToList();
+                item.Conditions = item.CaseTrees.Select(t => (ExpressionNode)t.Root).ToList();
+                item.Error = item.CaseTrees.Select(t => t.Error).FirstOrDefault(e => e != null);
 
-                return row =>
-                {
-                    for (var i = 0; i < predicates.Length; i++)
-                    {
-                        if (predicates[i](row) is true)
-                        {
-                            return caseLabels[i];
-                        }
-                    }
-                    return null;
-                };
+                return item;
             }
 
             if (args.Count != 3 ||
@@ -102,10 +111,11 @@ namespace SqlLinq.TimeSeries
                 count > 1000 ||
                 ceiling / count <= 0)
             {
-                throw new SqlException("buckets takes (numeric expression, positive finite ceiling, bucket count from 1 to 1000).");
+                item.Error = new SqlException("buckets takes (numeric expression, positive finite ceiling, bucket count from 1 to 1000).", start, expression.Length);
+
+                return item;
             }
 
-            var value = labelsOnly ? null : SqlExpression.Compile<T>(rewrite(args[0]), functions);
             var boundaries = new double[count - 1];
             var decimalWidth = ceiling < (double)decimal.MaxValue ? (decimal)ceiling / count : 0;
             var useDecimal = decimalWidth > 0 && (double)decimalWidth == ceiling / count;
@@ -137,32 +147,61 @@ namespace SqlLinq.TimeSeries
                 }
             }
 
-            labels = bucketLabels;
+            item.Labels = bucketLabels;
+            item.Boundaries = boundaries;
+            item.Error = TimeSeriesSyntaxTree.Value(text, arguments.Count == 0 ? null : arguments[0], functions);
 
-            return row =>
+            return item;
+        }
+
+        internal static Expression<Func<T, object>> Lambda<T>(TimeSeriesExpression facet)
+        {
+            if (facet.Plain)
             {
-                var raw = value(row);
-                if (raw == null)
+                return SqlExpression.Lambda<T>(facet.Expression);
+            }
+
+            var row = Expression.Parameter(typeof(T), "row");
+            if (facet.Boundaries == null)
+            {
+                var predicates = facet.Conditions.Select(SqlExpression.Lambda<T>).ToList();
+                Expression cases = Expression.Constant(null);
+                for (var i = predicates.Count - 1; i >= 0; i--)
                 {
-                    return null;
+                    cases = Expression.Condition(TimeSeriesQueryTree<T>.IsTrue(TimeSeriesQueryTree<T>.Inline(predicates[i], row)), Expression.Constant(facet.CaseLabels[i], typeof(object)), cases);
                 }
 
-                var code = Type.GetTypeCode(raw.GetType());
-                if (raw.GetType().IsEnum || code < TypeCode.SByte || code > TypeCode.Decimal)
-                {
-                    throw new SqlException("buckets requires numeric values; received " + raw.GetType().Name + ".");
-                }
+                return Expression.Lambda<Func<T, object>>(cases, row);
+            }
 
-                var number = Convert.ToDouble(raw, CultureInfo.InvariantCulture);
-                if (!double.IsFinite(number))
-                {
-                    return null;
-                }
+            var value = SqlExpression.Lambda<T>(((NodeWithId)facet.Expression).Arguments[0].Expression);
+            var bucket = Expression.Call(typeof(FacetExpression), nameof(Bucket), null, TimeSeriesQueryTree<T>.Inline(value, row), Expression.Constant(facet.Boundaries), Expression.Constant(facet.Labels.ToArray()));
 
-                var index = Array.BinarySearch(boundaries, number);
+            return Expression.Lambda<Func<T, object>>(bucket, row);
+        }
 
-                return bucketLabels[index < 0 ? ~index : index + 1];
-            };
+        internal static object Bucket(object value, double[] boundaries, string[] labels)
+        {
+            if (value == null)
+            {
+                return null;
+            }
+
+            var code = Type.GetTypeCode(value.GetType());
+            if (value.GetType().IsEnum || code < TypeCode.SByte || code > TypeCode.Decimal)
+            {
+                throw new SqlException("buckets requires numeric values; received " + value.GetType().Name + ".");
+            }
+
+            var number = Convert.ToDouble(value, CultureInfo.InvariantCulture);
+            if (!double.IsFinite(number))
+            {
+                return null;
+            }
+
+            var index = Array.BinarySearch(boundaries, number);
+
+            return labels[index < 0 ? ~index : index + 1];
         }
 
         private static string Format(double number)

@@ -8,24 +8,22 @@ namespace SqlLinq.Units
         public static IEnumerable<TSource> UnitQuery<TSource>(
             this IEnumerable<TSource> source,
             string sql,
-            UnitConversions units,
-            Func<string, string> rewrite = null)
+            UnitConversions units)
         {
-            return source.UnitQuery<TSource, TSource>(sql, units, rewrite);
+            return source.UnitQuery<TSource, TSource>(sql, units);
         }
 
         public static IEnumerable<TResult> UnitQuery<TSource, TResult>(
             this IEnumerable<TSource> source,
             string sql,
-            UnitConversions units,
-            Func<string, string> rewrite = null)
+            UnitConversions units)
         {
             if (units == null)
             {
                 throw new ArgumentNullException(nameof(units));
             }
 
-            return source.Query<TSource, TResult>(rewrite == null ? sql : rewrite(sql), new ISqlFunction[] { units });
+            return source.Query<TSource, TResult>(sql, new ISqlFunction[] { units });
         }
     }
 }

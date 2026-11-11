@@ -44,7 +44,7 @@ namespace SqlLinq.SyntaxTree.Clauses
         {
             var select = EnclosingSelect();
             var item = Expression.Parameter(tSource, "item");
-            var keys = GroupByItems.Select(g => select.CreateFieldSelector(g.Id, item)).ToList();
+            var keys = GroupByItems.Select(g => SelectNode.CreateFieldSelector(select, g.Id, item)).ToList();
             Validate();
 
             var types = keys.Select(k => k.Type).ToArray();

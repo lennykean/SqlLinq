@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Threading;
+using LinqStatistics;
 
 namespace SqlLinq.TimeSeries
 {
@@ -48,6 +50,43 @@ namespace SqlLinq.TimeSeries
             }
 
             return p;
+        }
+
+        public static object Derivative(List<(TimeSpan Time, object Value)> points, double seconds)
+        {
+            var nonNumeric = points.Select(p => p.Value).FirstOrDefault(v => !IsNumeric(v));
+            if (nonNumeric != null)
+            {
+                throw new SqlException("Arithmetic requires numeric operands; received " + nonNumeric.GetType().Name + ".");
+            }
+
+            if (points.Count < 2 || points.All(p => p.Time == points[0].Time))
+            {
+                return null;
+            }
+
+            var fit = points.Select(p => Tuple.Create((p.Time - points[0].Time).TotalSeconds, ToDouble(p.Value))).LeastSquares();
+
+            return fit.M * seconds;
+        }
+
+        public static List<(TimeSpan Time, T Item)> Read<T>(IEnumerable<T> source, Func<T, TimeSpan> time, CancellationToken cancellationToken)
+        {
+            return source
+                .Select(item =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return (Time: time(item), Item: item);
+                })
+                .ToList();
+        }
+
+        public static IEnumerable<long> Buckets(long first, long last)
+        {
+            for (var bucket = first; bucket <= last; bucket++)
+            {
+                yield return bucket;
+            }
         }
 
         public static object SortKey(object value)

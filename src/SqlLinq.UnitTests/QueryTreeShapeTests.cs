@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -41,15 +43,15 @@ namespace SqlLinq.UnitTests
         public void TypedQueriesCompileToLinqShapes(string sql)
         {
             // Arrange
-            var query = new Query<CrewMember, Tuple<string, int>>(sql);
+            var tables = new Dictionary<string, IEnumerable> { ["this"] = Orville.Crew() };
 
             // Act
-            query.Compile();
-            var rows = query.Evaluate(Orville.Crew()).ToList();
+            var tree = SourcesExtensions.Tree<Tuple<string, int>>(tables, sql);
+            var rows = tree.Compile()().ToList();
 
             // Assert
             Assert.IsNotEmpty(rows);
-            Assert.AreEqual("", TreeShape.Disallowed(query.Tree));
+            Assert.AreEqual("", TreeShape.Disallowed(tree));
         }
 
         [TestMethod]
@@ -63,15 +65,15 @@ namespace SqlLinq.UnitTests
         public void TypedAggregatesCompileToLinqShapes(string sql)
         {
             // Arrange
-            var query = new Query<CrewMember, Tuple<string, double?>>(sql);
+            var tables = new Dictionary<string, IEnumerable> { ["this"] = Orville.Crew() };
 
             // Act
-            query.Compile();
-            var rows = query.Evaluate(Orville.Crew()).ToList();
+            var tree = SourcesExtensions.Tree<Tuple<string, double?>>(tables, sql);
+            var rows = tree.Compile()().ToList();
 
             // Assert
             Assert.IsNotEmpty(rows);
-            Assert.AreEqual("", TreeShape.Disallowed(query.Tree));
+            Assert.AreEqual("", TreeShape.Disallowed(tree));
         }
 
         [TestMethod]

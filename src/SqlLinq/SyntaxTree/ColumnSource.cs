@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 
@@ -29,31 +30,46 @@ namespace SqlLinq.SyntaxTree
             }
         }
 
-        internal ISqlFunction Function { get; set; }
+        public ISqlFunction Function { get; internal set; }
 
-        internal IReadOnlyList<(string Text, ExpressionNode Node)> Arguments { get; set; }
+        public string FunctionName { get; internal set; }
+
+        public IReadOnlyList<ArgumentNode> Arguments { get; internal set; }
 
         internal IEnumerable<NodeWithId> ArgumentFields
         {
             get
             {
-                return NodeWithId.ArgumentFields(Arguments ?? Enumerable.Empty<(string Text, ExpressionNode Node)>());
+                return NodeWithId.ArgumentFields(Arguments ?? Enumerable.Empty<ArgumentNode>());
             }
+        }
+
+        public override string ToSql()
+        {
+            return Function == null ? base.ToSql() : JoinSql(Children.Select(c => c is TerminalNode ? NodeWithId.Call(FunctionName, Arguments) : c.ToSql()));
+        }
+
+        internal override void CopyTo(NonTerminalNode copy, Func<NonTerminalNode, NonTerminalNode> replacement)
+        {
+            var column = (ColumnSource)copy;
+            column.Function = Function;
+            column.FunctionName = FunctionName;
+            column.Arguments = Arguments?.Select(a => a.Copy(column, replacement)).ToList();
         }
 
         internal virtual Expression CreateRowValue(ParameterExpression rows, ParameterExpression row)
         {
             if (Function != null)
             {
-                return Function.Compile(Arguments.Select(a => new SqlArgument(a.Text, a.Node.CreateExpression(rows, row))).ToList());
+                return Function.Compile(Arguments.Select(a => new SqlArgument(a.Text, a.Expression.CreateExpression(rows, row))).ToList());
             }
 
-            return EnclosingSelect().CreateFieldSelector(Id, row);
+            return SelectNode.CreateFieldSelector(EnclosingSelect(), Id, row);
         }
 
         protected virtual Identifier CreateIdentifier()
         {
-            return SqlSyntax.Name(GetTerminalText("Id"));
+            return SqlSyntax.Name(GetTerminal("Id"));
         }
 
         public Identifier Id

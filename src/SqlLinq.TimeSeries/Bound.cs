@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace SqlLinq.TimeSeries
 {
-    sealed class Bound
+    public sealed class Bound
     {
         private static readonly Regex Duration = new Regex(@"^(\d+(?:\.\d+)?)\s*(?:(ms|milliseconds?)|(m|mins?|minutes?)|(h|hours?)|s|secs?|seconds?)?\s*(ago)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
@@ -17,15 +17,20 @@ namespace SqlLinq.TimeSeries
             return Ago ? now - Offset : Offset;
         }
 
-        public static Bound Parse(string text, string clause)
+        internal static Bound Parse(string text, string clause, int start = -1)
         {
             var m = Duration.Match(text);
             if (!m.Success)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} {1} isn't a duration, e.g. {0} 30 seconds or {0} 500 ms.", clause, text));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} {1} isn't a duration, e.g. {0} 30 seconds or {0} 500 ms.", clause, text), start, start < 0 ? 0 : text.Length);
             }
 
             var value = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+            var seconds = value * (m.Groups[2].Success ? 0.001 : m.Groups[3].Success ? 60 : m.Groups[4].Success ? 3600 : 1);
+            if (!(seconds < TimeSpan.MaxValue.TotalSeconds))
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} {1} is too long a duration.", clause, text), start, start < 0 ? 0 : text.Length);
+            }
 
             TimeSpan offset;
 

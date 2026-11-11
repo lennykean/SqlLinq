@@ -20,22 +20,64 @@ namespace SqlLinq
         {
             try
             {
-                var parser = new SqlParser(functions);
-                if (!parser.Parse("SELECT * FROM this WHERE " + expression))
+                var syntax = SqlSyntaxTree.ParseExpression(expression, functions);
+                if (syntax.Error != null)
                 {
-                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin expression\n\t{1}", parser.ErrorString, expression));
+                    throw syntax.Error;
                 }
-                var node = ((SelectNode)parser.SyntaxTree).WhereClause.FindChild<ExpressionNode>();
-                var source = Expression.Parameter(typeof(IEnumerable<T>), "source");
-                var item = Expression.Parameter(typeof(T), "item");
-                var function = Expression.Lambda<Func<IEnumerable<T>, T, object>>(Expression.Convert(node.CreateExpression(source, item), typeof(object)), source, item).Compile();
 
-                return t => function(Enumerable.Empty<T>(), t);
+                return Built<T>((ExpressionNode)syntax.Root).Compile();
             }
             catch (Exception e) when (!(e is SqlException))
             {
                 throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL compile error:\n\t{0}\nin expression\n\t{1}", e.Message, expression), e);
             }
+        }
+
+        public static Func<T, object> Compile<T>(ExpressionNode expression)
+        {
+            return Wrapped(expression, () => Built<T>(expression).Compile());
+        }
+
+        public static Expression<Func<T, object>> Lambda<T>(ExpressionNode expression)
+        {
+            return Wrapped(expression, () => Built<T>(expression));
+        }
+
+        private static TCompiled Wrapped<TCompiled>(ExpressionNode expression, Func<TCompiled> build)
+        {
+            if (expression == null)
+            {
+                throw new ArgumentNullException(nameof(expression));
+            }
+
+            try
+            {
+                return build();
+            }
+            catch (Exception e) when (!(e is SqlException))
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL compile error:\n\t{0}\nin expression\n\t{1}", e.Message, expression.Source ?? expression.ToSql()), e, expression.Start, expression.Length);
+            }
+        }
+
+        private static Expression<Func<T, object>> Built<T>(ExpressionNode expression)
+        {
+            var error = expression.FindDescendants<NodeWithId>().Prepend(expression as NodeWithId)
+                .SelectMany(n => n?.Arguments ?? Enumerable.Empty<ArgumentNode>())
+                .Select(a => a.Error)
+                .FirstOrDefault(e => e != null);
+            if (error != null)
+            {
+                throw error;
+            }
+
+            var node = (ExpressionNode)expression.Copy();
+            var source = Expression.Parameter(typeof(IEnumerable<T>), "source");
+            var item = Expression.Parameter(typeof(T), "item");
+            var body = Expression.Convert(node.CreateExpression(source, item), typeof(object));
+
+            return Expression.Lambda<Func<T, object>>(ParameterReplacer.Replace(body, source, Expression.Constant(Enumerable.Empty<T>(), source.Type)), item);
         }
     }
 }

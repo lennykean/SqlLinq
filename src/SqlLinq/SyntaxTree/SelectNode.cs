@@ -68,11 +68,21 @@ namespace SqlLinq.SyntaxTree
             return !Joined && Names.Contains(id.Qualifier) ? id.LocalId : lookupId;
         }
 
-        internal Expression CreateFieldSelector(Identifier id, ParameterExpression row)
+        internal static Expression CreateFieldSelector(SelectNode scope, Identifier id, ParameterExpression row)
         {
             Expression source = row;
-            for (var level = this; level != null && source != null; level = level.EnclosingSelect())
+            for (var level = scope; source != null; level = level.EnclosingSelect())
             {
+                if (level == null)
+                {
+                    if (id.Qualifier.Length == 0 || string.Equals(id.Qualifier, "this", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return ExpressionFactory.CreateFieldSelector(source, id.Qualifier.Length == 0 ? id.LookupId : id.LocalId);
+                    }
+
+                    break;
+                }
+
                 if (level.Owns(id))
                 {
                     return level.Layout == null ? ExpressionFactory.CreateFieldSelector(source, level.Field(id.LookupId)) : level.Layout.Read(source, id);
@@ -81,9 +91,9 @@ namespace SqlLinq.SyntaxTree
                 source = level.OuterRow;
             }
 
-            if (Layout != null)
+            if (scope?.Layout != null)
             {
-                return Layout.Read(row, id);
+                return scope.Layout.Read(row, id);
             }
 
             if (row.Type == typeof(object) || row.Type.IsDictionary())

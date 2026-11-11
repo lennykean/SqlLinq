@@ -21,10 +21,26 @@ namespace SqlLinq
         {
         }
 
+        public SqlException(string message, int start, int length) : base(message)
+        {
+            Start = start;
+            Length = length;
+        }
+
+        public SqlException(string message, Exception inner, int start, int length) : base(message, inner)
+        {
+            Start = start;
+            Length = length;
+        }
+
         protected SqlException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         {
         }
+
+        public int Start { get; } = -1;
+
+        public int Length { get; }
 
         internal static void ThrowIfNestedTooDeeply()
         {

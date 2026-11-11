@@ -22,7 +22,7 @@ namespace SqlLinq.SyntaxTree.Clauses
 
         internal virtual Identifier CreateIdentifier()
         {
-            return SqlSyntax.Name(GetTerminalText("Id"));
+            return SqlSyntax.Name(GetTerminal("Id"));
         }
 
         public Identifier Id
@@ -78,7 +78,7 @@ namespace SqlLinq.SyntaxTree.Clauses
 
             var item = Expression.Parameter(tSource, "item");
 
-            return Expression.Lambda(EnclosingSelect().CreateFieldSelector(column == null ? Id : column.Id, item), item);
+            return Expression.Lambda(SelectNode.CreateFieldSelector(EnclosingSelect(), column == null ? Id : column.Id, item), item);
         }
 
         internal virtual ColumnSource SelectColumn()

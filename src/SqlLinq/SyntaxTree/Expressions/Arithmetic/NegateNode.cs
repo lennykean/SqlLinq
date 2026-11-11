@@ -15,5 +15,10 @@ namespace SqlLinq.SyntaxTree.Expressions.Arithmetic
 
             return ArithmeticExpressionNode.Negate(value);
         }
+
+        public override string ToSql()
+        {
+            return "-" + Children[1].ToSql();
+        }
     }
 }

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using SqlLinq.SyntaxTree.Expressions;
 
 namespace SqlLinq.TimeSeries.UnitTests
 {
@@ -111,8 +112,8 @@ namespace SqlLinq.TimeSeries.UnitTests
             var ticks = new TimeSeriesQuery<int>(nrql, value => TimeSpan.FromTicks(value));
 
             // Act
-            var absoluteRows = absolute.Evaluate(new[] { noon.AddTicks(-1), noon });
-            var negativeRows = ticks.Evaluate(new[] { -1, 0 });
+            var absoluteRows = absolute.Evaluate([noon.AddTicks(-1), noon]);
+            var negativeRows = ticks.Evaluate([-1, 0]);
 
             // Assert
             CollectionAssert.AreEqual(new object[] { 1, 1 }, Column(absoluteRows, "N"));
@@ -553,18 +554,330 @@ namespace SqlLinq.TimeSeries.UnitTests
         }
 
         [TestMethod]
+        [DataRow("SELECT count(*) FROM shipslog GROUP BY DriveStage", "GROUP")]
+        [DataRow("SELECT count(*) FROM shipslog SINCE 1 SINCE 2", "SINCE")]
+        [DataRow("SELECT FROM shipslog", "SELECT FROM shipslog")]
+        [DataRow("SELECT count(*) FROM shipslog SINCE yesterday", "yesterday")]
+        [DataRow("SELECT count(*) FROM shipslog SINCE 1 hou", "1 hou")]
+        [DataRow("SELECT count(*) FROM shipslog UNTIL 2 days", "2 days")]
+        [DataRow("SELECT count(*) FROM shipslog SINCE 1 COMPARE 1 second", "1 second")]
+        [DataRow("SELECT count(*) FROM shipslog COMPARE WITH 1 second ago", "WITH 1 second ago")]
+        [DataRow("SELECT count(*) FROM shipslog SINCE 1 COMPARE WITH soon", "soon")]
+        [DataRow("SELECT count(*) FROM shipslog TIMESERIES fast", "fast")]
+        [DataRow("SELECT count(*) FROM shipslog TIMESERIES 0 seconds", "0 seconds")]
+        [DataRow("SELECT count(*) FROM shipslog SESSION 1 second ago", "1 second ago")]
+        [DataRow("SELECT count(*) FROM shipslog TIMESERIES 1 second SESSION 2 seconds", "2 seconds")]
+        [DataRow("SELECT count(*) FROM shipslog LIMIT 0", "0")]
+        [DataRow("SELECT count(*) FROM shipslog LIMIT 5", "5")]
+        [DataRow("SELECT DriveSpin FROM shipslog TIMESERIES 1 second", "DriveSpin")]
+        public void ClauseErrorsCarryTheirPosition(string nrql, string text)
+        {
+            // Act
+            var e = Assert.ThrowsExactly<SqlException>(() => new TimeSeriesQuery<Sample>(nrql, s => TimeSpan.FromSeconds(s.Time)));
+
+            // Assert
+            Assert.AreEqual(nrql.LastIndexOf(text, StringComparison.Ordinal), e.Start);
+            Assert.AreEqual(text.Length, e.Length);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT count(*) FROM shipslog SINCE")]
+        [DataRow("SELECT count(*) FROM shipslog TIMESERIES ")]
+        [DataRow("SELECT count(*) FROM shipslog LIMIT\n")]
+        [DataRow("")]
+        public void IncompleteQueriesPointAtTheirEnd(string nrql)
+        {
+            // Act
+            var e = Assert.ThrowsExactly<SqlException>(() => new TimeSeriesQuery<Sample>(nrql, s => TimeSpan.FromSeconds(s.Time)));
+
+            // Assert
+            Assert.AreEqual(nrql.Length, e.Start);
+            Assert.AreEqual(0, e.Length);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT count(*) FROM shipslog WHERE DriveSpin >", "")]
+        [DataRow("SELECT count(*) FROM shipslog WHERE Note = 'Kaylon", "'")]
+        [DataRow("SELECT count(*), DriveSpin FROM shipslog", "DriveSpin")]
+        [DataRow("SELECT percentile(DriveSpin, 101) FROM shipslog", "percentile(DriveSpin, 101)")]
+        [DataRow("SELECT max(Warp) FROM shipslog", "Warp")]
+        [DataRow("SELECT count(*) FROM shipslog WHERE Warp > 1", "Warp > 1")]
+        public void ExpressionErrorsCarryTheirPosition(string nrql, string text)
+        {
+            // Act
+            var e = Assert.ThrowsExactly<SqlException>(() => new TimeSeriesQuery<Sample>(nrql, s => TimeSpan.FromSeconds(s.Time)));
+
+            // Assert
+            Assert.AreEqual(nrql.LastIndexOf(text, StringComparison.Ordinal), e.Start);
+            Assert.AreEqual(text.Length, e.Length);
+        }
+
+        [TestMethod]
+        public void ClausesKeepTheirKeywordTextAndPosition()
+        {
+            // Arrange
+            const string Nrql = "SELECT max(DriveSpin) AS TopSpin FROM shipslog WHERE DriveStage > 0 FACET Quantum SINCE 1 second ago UNTIL 3 TIMESERIES 1 second COMPARE WITH 2 seconds ago LIMIT 2";
+            var expectedKeywords = new[] { "SELECT", "FROM", "WHERE", "FACET", "SINCE", "UNTIL", "TIMESERIES", "COMPARE", "LIMIT" };
+            var expectedTexts = new[] { "max(DriveSpin) AS TopSpin", "shipslog", "DriveStage > 0", "Quantum", "1 second ago", "3", "1 second", "WITH 2 seconds ago", "2" };
+            var expectedStarts = new[] { 7, 38, 53, 74, 88, 107, 120, 137, 162 };
+
+            // Act
+            var clauses = TimeSeriesSyntaxTree.Parse(Nrql).Clauses;
+
+            // Assert
+            CollectionAssert.AreEqual(expectedKeywords, clauses.Select(c => c.Keyword).ToArray());
+            CollectionAssert.AreEqual(expectedTexts, clauses.Select(c => c.Text).ToArray());
+            CollectionAssert.AreEqual(expectedStarts, clauses.Select(c => c.Start).ToArray());
+        }
+
+        [TestMethod]
+        [DataRow("select count(*) as N from [ships log]\n  since   2\tuntil 4 ")]
+        [DataRow("SELECT Id FROM shipslog WHERE Note <> 'since limit' LIMIT 2")]
+        [DataRow("SELECT count(*) FROM shipslog FACET Quantum, cases(DriveSpin < 3000 AS 'a', DriveSpin >= 3000 AS 'b') SESSION 1 second")]
+        public void EachClauseTextIsWhereItsStartSays(string nrql)
+        {
+            // Act
+            var clauses = TimeSeriesSyntaxTree.Parse(nrql).Clauses;
+
+            // Assert
+            foreach (var clause in clauses)
+            {
+                Assert.AreEqual(clause.Text, nrql.Substring(clause.Start, clause.Text.Length));
+                Assert.IsTrue(nrql.Substring(0, clause.Start).TrimEnd().EndsWith(clause.Keyword, StringComparison.OrdinalIgnoreCase), clause.Keyword);
+            }
+        }
+
+        [TestMethod]
+        public void AbsentClausesAreMissingAndNull()
+        {
+            // Arrange
+            var expectedKeywords = new[] { "SELECT", "FROM" };
+
+            // Act
+            var query = TimeSeriesSyntaxTree.Parse("SELECT Id FROM shipslog");
+
+            // Assert
+            CollectionAssert.AreEqual(expectedKeywords, query.Clauses.Select(c => c.Keyword).ToArray());
+            Assert.IsNull(query.Since);
+            Assert.IsNull(query.Until);
+            Assert.IsNull(query.TimeSeries);
+            Assert.IsNull(query.Session);
+            Assert.IsNull(query.Compare);
+            Assert.IsNull(query.Limit);
+        }
+
+        [TestMethod]
+        public void ClauseValuesAreParsed()
+        {
+            // Act
+            var buckets = TimeSeriesSyntaxTree.Parse("SELECT max(DriveSpin) FROM shipslog FACET Quantum SINCE 90 seconds ago UNTIL 500 ms TIMESERIES 2 seconds COMPARE WITH 1 minute LIMIT 3");
+            var sessions = TimeSeriesSyntaxTree.Parse("SELECT count(*) FROM shipslog SINCE 1 h SESSION 1.5 s COMPARE WITH 1 hour ago");
+
+            // Assert
+            Assert.AreEqual(TimeSpan.FromSeconds(90), buckets.Since.Offset);
+            Assert.IsTrue(buckets.Since.Ago);
+            Assert.AreEqual(TimeSpan.FromMilliseconds(500), buckets.Until.Offset);
+            Assert.IsFalse(buckets.Until.Ago);
+            Assert.AreEqual(TimeSpan.FromSeconds(2), buckets.TimeSeries);
+            Assert.IsNull(buckets.Session);
+            Assert.AreEqual(TimeSpan.FromMinutes(1), buckets.Compare);
+            Assert.AreEqual(3, buckets.Limit);
+            Assert.AreEqual(TimeSpan.FromHours(1), sessions.Since.Offset);
+            Assert.IsFalse(sessions.Since.Ago);
+            Assert.IsNull(sessions.Until);
+            Assert.IsNull(sessions.TimeSeries);
+            Assert.AreEqual(TimeSpan.FromSeconds(1.5), sessions.Session);
+            Assert.AreEqual(TimeSpan.FromHours(1), sessions.Compare);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT Id, PlasmaPressure * 2 AS P FROM shipslog")]
+        [DataRow("SELECT Id FROM shipslog SINCE 2 COMPARE WITH 2 seconds")]
+        [DataRow("SELECT count(*) AS N, average(DriveSpin) FROM shipslog")]
+        [DataRow("SELECT DriveStage, max(DriveSpin) AS TopSpin FROM shipslog FACET DriveStage, Quantum")]
+        [DataRow("SELECT count(*) AS DriveStage, min(Id) FROM shipslog FACET DriveStage")]
+        [DataRow("SELECT percentile(DriveSpin, 5, 95) AS P FROM shipslog TIMESERIES 1 second")]
+        [DataRow("SELECT count(*) AS N FROM shipslog FACET Quantum SESSION 500 ms")]
+        [DataRow("SELECT count(*) AS N FROM shipslog SINCE 2 UNTIL 4 TIMESERIES 1 second COMPARE WITH 2 seconds ago")]
+        public void ColumnsAreTheKeysOfEachRow(string nrql)
+        {
+            // Arrange
+            var query = new TimeSeriesQuery<Sample>(nrql, s => TimeSpan.FromSeconds(s.Time));
+
+            // Act
+            var rows = query.Evaluate(GetSamples());
+
+            // Assert
+            Assert.IsNotEmpty(rows);
+            foreach (var row in rows)
+            {
+                CollectionAssert.AreEqual(query.Plan.Columns.ToList(), row.Keys.ToList());
+            }
+        }
+
+        [TestMethod]
+        public void ParseReadsAsFarAsItCan()
+        {
+            // Arrange
+            const string Nrql = "SELECT average(DriveSpin) AS A, max(PlasmaPressure) FROM shipslog FACET Quantum AS Q SINCE 1 hou TIMESERIES 1 second";
+            var expectedKeywords = new[] { "SELECT", "FROM", "FACET", "SINCE", "TIMESERIES" };
+
+            // Act
+            var syntax = TimeSeriesSyntaxTree.Parse(Nrql);
+
+            // Assert
+            Assert.AreEqual("1 hou", Nrql.Substring(syntax.Error.Start, syntax.Error.Length));
+            CollectionAssert.AreEqual(expectedKeywords, syntax.Clauses.Select(c => c.Keyword).ToArray());
+            CollectionAssert.AreEqual(new object[] { "average(DriveSpin)/A/average", "max(PlasmaPressure)//max" }, syntax.Select.Select(i => i.Text + "/" + i.Alias + "/" + string.Join(",", i.Aggregates.Select(a => a.FunctionName))).ToArray());
+            CollectionAssert.AreEqual(new object[] { "Quantum/Q" }, syntax.Facets.Select(i => i.Text + "/" + i.Alias).ToArray());
+            Assert.IsNull(syntax.Since);
+            Assert.AreEqual(TimeSpan.FromSeconds(1), syntax.TimeSeries);
+        }
+
+        [TestMethod]
+        public void ParseOfEveryPrefixOfAQueryNeverThrows()
+        {
+            // Arrange
+            const string Nrql = "SELECT max(DriveSpin) - min(DriveSpin) AS Spread, percentile(PlasmaPressure, 5, 95) FROM shipslog WHERE Note <> 'Union, Point' AND DriveStage > 0 FACET cases(FuelMix < 13 AS 'rich', FuelMix >= 13 AS 'lean') AS Mix SINCE 2 seconds ago UNTIL 4 TIMESERIES 500 ms COMPARE WITH 1 second LIMIT 2";
+
+            // Act
+            var parsed = Enumerable.Range(0, Nrql.Length + 1).Select(n => TimeSeriesSyntaxTree.Parse(Nrql.Substring(0, n))).ToList();
+
+            // Assert
+            Assert.IsNull(parsed[^1].Error);
+            Assert.IsTrue(parsed.Select((syntax, length) => syntax.Error == null || syntax.Error.Start <= length).All(inside => inside));
+        }
+
+        [TestMethod]
+        [DataRow("SELECT max(DriveSpin) AS TopSpin FROM shipslog WHERE DriveStage > 0 FACET Quantum, buckets(PlasmaPressure, 100, 4) AS P SINCE 1 second ago UNTIL 3 TIMESERIES 1 second COMPARE WITH 2 seconds ago LIMIT 2")]
+        [DataRow("SELECT Id, PlasmaPressure * 2 AS Double FROM shipslog SINCE 1 SESSION 500 ms LIMIT 3")]
+        [DataRow("SELECT count(*) FROM shipslog WHERE DriveSpin >")]
+        public void ParseReadsWhatTheQueryRuns(string nrql)
+        {
+            // Arrange
+            var run = new TimeSeriesSyntaxTree[1];
+
+            // Act
+            var parsed = TimeSeriesSyntaxTree.Parse(nrql);
+            var thrown = Record(() => run[0] = new TimeSeriesQuery<Sample>(nrql, s => TimeSpan.FromSeconds(s.Time)).Plan.Syntax);
+
+            // Assert
+            Assert.AreEqual(thrown?.Message, parsed.Error?.Message);
+            if (run[0] != null)
+            {
+                Assert.AreEqual(Describe(run[0]), Describe(parsed));
+            }
+        }
+
+        [TestMethod]
+        public void SelectAndFacetItemsKeepTheirTextAliasAggregatesAndPosition()
+        {
+            // Arrange
+            const string Nrql = "SELECT max(DriveSpin) - min(DriveSpin) AS Spread, percentile(DriveSpin, 5, 95), DriveStage FROM shipslog FACET DriveStage, buckets(PlasmaPressure, 100, 4) AS [Plasma axis]";
+            var expectedSelect = new object[] { "max(DriveSpin) - min(DriveSpin)/Spread/max,min", "percentile(DriveSpin, 5, 95)//percentile", "DriveStage//" };
+            var expectedFacets = new object[] { "DriveStage/", "buckets(PlasmaPressure, 100, 4)/Plasma axis" };
+
+            // Act
+            var syntax = TimeSeriesSyntaxTree.Parse(Nrql);
+
+            // Assert
+            Assert.IsNull(syntax.Error);
+            CollectionAssert.AreEqual(expectedSelect, syntax.Select.Select(i => i.Text + "/" + i.Alias + "/" + string.Join(",", i.Aggregates.Select(a => a.FunctionName))).ToArray());
+            CollectionAssert.AreEqual(expectedFacets, syntax.Facets.Select(i => i.Text + "/" + i.Alias).ToArray());
+            Assert.IsTrue(syntax.Select.Concat(syntax.Facets).All(i => Nrql.Substring(i.Start, i.Text.Length) == i.Text));
+            Assert.AreEqual(Nrql.IndexOf(", DriveStage FROM", StringComparison.Ordinal) + 2, syntax.Select[2].Start);
+            Assert.AreEqual(Nrql.IndexOf("FACET DriveStage", StringComparison.Ordinal) + 6, syntax.Facets[0].Start);
+        }
+
+        [TestMethod]
+        public void NamesAreTheMembersTheExpressionsRead()
+        {
+            // Arrange
+            const string Nrql = "SELECT max(DriveSpin) AS m, rate(count(*), 1 second), derivative(PlasmaPressure, 1 minute), latest(Id) FROM shipslog WHERE Note <> 'Quantum' AND DriveStage > 0 FACET cases(FuelMix < 13 AS 'rich', FuelMix >= 13 AS 'lean') AS Mix, buckets(DriveStage, 10, 2) SINCE 1 second ago";
+            var expected = new object[] { "DriveSpin", "PlasmaPressure", "Id", "Note", "DriveStage", "FuelMix", "FuelMix", "DriveStage" };
+
+            // Act
+            var parsed = TimeSeriesSyntaxTree.Parse(Nrql);
+            var run = new TimeSeriesQuery<Sample>(Nrql, s => TimeSpan.FromSeconds(s.Time)).Plan.Syntax;
+
+            // Assert
+            CollectionAssert.AreEqual(expected, parsed.Names.Select(n => n.LookupId).ToArray());
+            Assert.IsTrue(parsed.Names.All(n => Nrql.Substring(n.Start, n.Length) == n.LookupId));
+            CollectionAssert.AreEqual(parsed.Names.Select(n => n.Start).ToArray(), run.Names.Select(n => n.Start).ToArray());
+        }
+
+        [TestMethod]
+        public void TokensKnowTheDialectsKeywords()
+        {
+            // Arrange
+            const string Nrql = "SELECT average(DriveSpin) FROM shipslog FACET Quantum SINCE 1 hour ago COMPARE WITH 1 hour ago";
+
+            // Act
+            var tokens = TimeSeriesSyntaxTree.Parse(Nrql).Tokens;
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { "SELECT", "FROM", "FACET", "SINCE", "ago", "COMPARE", "WITH", "ago" }, tokens.Where(t => t.Kind == SqlTokenKind.Keyword).Select(t => t.Text).ToArray());
+            CollectionAssert.AreEqual(new object[] { "average" }, tokens.Where(t => t.Kind == SqlTokenKind.FunctionName).Select(t => t.Text).ToArray());
+        }
+
+        [TestMethod]
+        public void ListedDialectWordsAreWhatTheQueryKnows()
+        {
+            // Arrange
+            var clauseKeywords = TimeSeriesSyntaxTree.Keywords.Where(k => k != "WITH" && k != "AGO").ToList();
+
+            // Act
+            var read = clauseKeywords.Select(k => TimeSeriesSyntaxTree.Parse("SELECT Id FROM shipslog " + k + " x").Clauses[^1].Keyword).ToList();
+
+            // Assert
+            CollectionAssert.AreEqual(clauseKeywords, read);
+            Assert.Contains("percentile", TimeSeriesSyntaxTree.Aggregates);
+            Assert.Contains("uniqueCount", TimeSeriesSyntaxTree.Aggregates);
+            CollectionAssert.AreEqual(new object[] { "buckets", "cases" }, TimeSeriesSyntaxTree.Functions.ToArray());
+        }
+
+        private static SqlException Record(Action action)
+        {
+            try
+            {
+                action();
+                return null;
+            }
+            catch (SqlException e)
+            {
+                return e;
+            }
+        }
+
+        private static string Describe(TimeSeriesSyntaxTree syntax)
+        {
+            return string.Join(
+                " | ",
+                string.Join(", ", syntax.Clauses.Select(c => c.Keyword + "@" + c.Start + "=" + c.Text)),
+                string.Join(", ", syntax.Select.Concat(syntax.Facets).Select(i => i.Text + "@" + i.Start + "/" + i.Alias + "/" + string.Join(",", i.Aggregates.Select(a => a.FunctionName)))),
+                string.Join(", ", syntax.Names.Select(n => n.LookupId + "@" + n.Start)),
+                syntax.Since?.Offset + "/" + syntax.Since?.Ago + "/" + syntax.Until?.Offset + "/" + syntax.TimeSeries + "/" + syntax.Session + "/" + syntax.Compare + "/" + syntax.Limit);
+        }
+
+        [TestMethod]
         public void RewriteSeesEachExpression()
         {
             // Arrange
-            var rewrite = (string expression) => expression.Replace("twice(DriveSpin)", "DriveSpin * 2", StringComparison.Ordinal);
-            var query = new TimeSeriesQuery<Sample>("SELECT max(twice(DriveSpin)), count(*) AS N FROM shipslog WHERE twice(DriveSpin) > 10000", s => TimeSpan.Zero, rewrite);
+            var query = new TimeSeriesQuery<Sample>("SELECT max(Twice), count(*) AS N FROM shipslog WHERE Twice > 10000", s => TimeSpan.Zero, Rename("Twice", "DriveSpin * 2"));
 
             // Act
             var row = query.Evaluate(GetSamples()).Single();
 
             // Assert
-            Assert.AreEqual(15800, row["max(twice(DriveSpin))"]);
+            Assert.AreEqual(15800, row["max(Twice)"]);
             Assert.AreEqual(3, row["N"]);
+        }
+
+        private static Func<ExpressionNode, ExpressionNode> Rename(string name, string expression)
+        {
+            var replacement = SqlSyntaxTree.ParseExpression(expression).Root;
+
+            return e => (ExpressionNode)e.Replace(n => n is NodeWithId id && id.Function == null && id.Id.LookupId == name ? replacement : null);
         }
 
         [TestMethod]
@@ -572,9 +885,9 @@ namespace SqlLinq.TimeSeries.UnitTests
         {
             // Arrange
             var seen = new List<string>();
-            var rewrite = (string expression) =>
+            var rewrite = (ExpressionNode expression) =>
             {
-                seen.Add(expression);
+                seen.Add(expression.ToSql());
                 return expression;
             };
             var expected = new[] { "Quantum", "DriveSpin", "DriveStage < 2", "DriveStage >= 2", "DriveSpin", "PlasmaPressure", "agg0 - agg1", "FuelMix", "DriveStage > 0", "Id", "PlasmaPressure * 2" };
@@ -1036,7 +1349,7 @@ namespace SqlLinq.TimeSeries.UnitTests
             var query = new TimeSeriesQuery<IDictionary<string, object>>(
                 "SELECT count(*) AS N FROM shipslog FACET buckets(Measured, 8000, 16), buckets(Ordered, 2, 4) TIMESERIES 1 second",
                 row => TimeSpan.FromSeconds((double)row["Measured"] == 1600 ? 1 : 0));
-            var rewritten = FacetExpression.Compile<IDictionary<string, object>>("buckets(Converted, 4, 4)", text => text.Replace("Converted", "Measured - Ordered", StringComparison.Ordinal));
+            var rewritten = FacetExpression.Compile<IDictionary<string, object>>("buckets(Converted, 4, 4)", Rename("Converted", "Measured - Ordered"));
 
             // Act
             var result = query.Evaluate(source);
@@ -1123,6 +1436,39 @@ namespace SqlLinq.TimeSeries.UnitTests
         {
             // Act & Assert
             Assert.ThrowsExactly<SqlException>(() => FacetExpression.Compile<IDictionary<string, object>>(expression));
+        }
+
+        [TestMethod]
+        [DataRow("DriveStage", "DriveStage")]
+        [DataRow("[DriveStage]", "DriveStage")]
+        [DataRow("DriveSpin > 5000", "DriveSpin > 5000")]
+        [DataRow("twice(DriveStage)", "twice(DriveStage)")]
+        [DataRow("buckets(DriveSpin, 8000, 2) AS spin", "spin")]
+        [DataRow("buckets(DriveSpin, 8000, 2) AS [Spin axis]", "Spin axis")]
+        [DataRow("cases(DriveSpin < 1 AS 'a', DriveSpin >= 1 AS 'b')", "cases(DriveSpin < 1 AS 'a', DriveSpin >= 1 AS 'b')")]
+        [DataRow("cases(DriveSpin < 1 AS 'a', DriveSpin >= 1 AS 'b') AS Band", "Band")]
+        public void FacetNamesAreTheirAliasOrText(string expression, string name)
+        {
+            // Act
+            var result = FacetExpression.Name(expression);
+
+            // Assert
+            Assert.AreEqual(name, result);
+        }
+
+        [TestMethod]
+        [DataRow("DriveStage AS Stage", "Stage")]
+        [DataRow("[DriveStage] AS [Drive stage]", "Drive stage")]
+        [DataRow("DriveSpin > 5000 AS Fast", "Fast")]
+        public void AnyFacetCanHaveAnAlias(string facet, string name)
+        {
+            // Act
+            var rows = Run("SELECT count(*) AS N FROM shipslog FACET " + facet);
+
+            // Assert
+            Assert.AreEqual(name, FacetExpression.Name(facet));
+            Assert.AreEqual(8, rows.Sum(r => (int)r["N"]));
+            Assert.IsTrue(rows.All(r => r.Count == 2 && r.ContainsKey(name)));
         }
 
         [TestMethod]

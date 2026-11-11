@@ -5,10 +5,27 @@ namespace SqlLinq.SyntaxTree
 {
     public class Identifier
     {
+        private readonly TerminalNode _terminal;
+
+        private readonly int _start = -1;
+
+        private readonly int _length;
+
         public Identifier(string id)
         {
             Debug.Assert(id != null);
             LookupId = id;
+        }
+
+        public Identifier(string id, int start, int length) : this(id)
+        {
+            _start = start;
+            _length = length;
+        }
+
+        internal Identifier(string id, TerminalNode terminal) : this(id)
+        {
+            _terminal = terminal;
         }
 
         /// <summary>
@@ -45,6 +62,10 @@ namespace SqlLinq.SyntaxTree
                 return LookupId;
             }
         }
+
+        public int Start => _terminal?.Start ?? _start;
+
+        public int Length => _terminal?.Length ?? _length;
 
         public override string ToString()
         {

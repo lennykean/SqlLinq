@@ -56,52 +56,101 @@ namespace SqlLinq
             bool elementType = false,
             CancellationToken cancellationToken = default)
         {
-            var query = Tree<TSource, TResult>(sources, sql, functions, requireJoin, elementType, cancellationToken).Compile();
-            cancellationToken.ThrowIfCancellationRequested();
-            return query();
-        }
-
-        internal static Expression<Func<IEnumerable<TResult>>> Tree<TResult>(IDictionary<string, IEnumerable> sources, string sql)
-        {
-            return Tree<object, TResult>(sources, sql, null, false, true, default);
-        }
-
-        private static Expression<Func<IEnumerable<TResult>>> Tree<TSource, TResult>(
-            IDictionary<string, IEnumerable> sources,
-            string sql,
-            IEnumerable<ISqlFunction> functions,
-            bool requireJoin,
-            bool elementType,
-            CancellationToken cancellationToken)
-        {
             if (sources == null)
             {
                 throw new ArgumentNullException(nameof(sources));
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            if (cancellationToken.CanBeCanceled)
+            var syntax = SqlSyntaxTree.Parse(sql, functions);
+            if (syntax.Error != null)
             {
-                sources = Cancellable(sources, cancellationToken);
-            }
-
-            var parser = new SqlParser(functions);
-            if (!parser.Parse(sql))
-            {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin statement\n\t{1}", parser.ErrorString, parser.ErrorLine));
+                throw syntax.Error;
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            var body = parser.SyntaxTree is UnionNode union
-                ? union.Combine<TResult>(union.Parts.Select(p => RunSelect<TSource, TResult>(sources, p.Select, sql, requireJoin, elementType)).ToList())
-                : RunSelect<TSource, TResult>(sources, parser.SyntaxTree as SelectNode, sql, requireJoin, elementType);
-
+            var plan = Compile<TSource, TResult>(syntax, Shape(sources), requireJoin, elementType);
             cancellationToken.ThrowIfCancellationRequested();
-            return Expression.Lambda<Func<IEnumerable<TResult>>>(body);
+
+            return plan.Execute(sources, cancellationToken);
+        }
+
+        internal static Expression<Func<IEnumerable<TResult>>> Tree<TResult>(IDictionary<string, IEnumerable> sources, string sql)
+        {
+            var syntax = SqlSyntaxTree.Parse(sql);
+            if (syntax.Error != null)
+            {
+                throw syntax.Error;
+            }
+
+            var plan = Plan<object, TResult>(syntax, Shape(sources), false, true, false, out _);
+            var tables = Expression.Constant(sources.Values.Select(t => t ?? Array.Empty<object>()).ToArray(), typeof(IEnumerable<IEnumerable>));
+
+            return Expression.Lambda<Func<IEnumerable<TResult>>>(ParameterReplacer.Replace(plan.Body, plan.Parameters[0], tables));
+        }
+
+        internal static SqlPlan<TResult> Compile<TSource, TResult>(SqlSyntaxTree syntax, IReadOnlyDictionary<string, Type> tables, bool requireJoin, bool elementType, bool bare = false)
+        {
+            var plan = Plan<TSource, TResult>(syntax, tables, requireJoin, elementType, bare, out var root);
+            var select = root as SelectNode ?? ((UnionNode)root).Parts[0].Select;
+            var star = (tables.Count == 1 ? tables.Values.First() : null) ?? typeof(object);
+            var columns = !(select.Columns is ColumnsStar)
+                ? select.Columns.ColumnSources.Select(c => c.ColumnAlias).ToList()
+                : star == typeof(object) || star.IsDictionary() ? new List<string>() : star.ColumnNames().ToList();
+
+            return new SqlPlan<TResult>(syntax, tables.Keys.ToList(), columns, plan);
+        }
+
+        private static Expression<Func<IEnumerable<IEnumerable>, IEnumerable<TResult>>> Plan<TSource, TResult>(
+            SqlSyntaxTree syntax,
+            IReadOnlyDictionary<string, Type> tables,
+            bool requireJoin,
+            bool elementType,
+            bool bare,
+            out NonTerminalNode root)
+        {
+            if (syntax.Error != null)
+            {
+                throw syntax.Error;
+            }
+
+            if (!(syntax.Root is SelectNode) && !(syntax.Root is UnionNode))
+            {
+                throw new InvalidOperationException("The syntax tree is an expression; compile it with SqlExpression.Compile.");
+            }
+
+            var copy = syntax.Root.Copy();
+            root = copy;
+            var parameter = Expression.Parameter(typeof(IEnumerable<IEnumerable>), "tables");
+            var sources = new Dictionary<string, IEnumerable>();
+            foreach (var table in tables)
+            {
+                sources.Add(table.Key, table.Value == null ? null : new TableSlot(parameter, sources.Count, table.Value));
+            }
+
+            var body = bare ? Bare<TSource, TResult>((SelectNode)copy, parameter)
+                : copy is UnionNode union
+                ? union.Combine<TResult>(union.Parts.Select(p => QueryTree.Scoped(p.Select, parameter, () => RunSelect<TSource, TResult>(sources, p.Select, syntax.Text, requireJoin, elementType))).ToList())
+                : QueryTree.Scoped((SelectNode)copy, parameter, () => RunSelect<TSource, TResult>(sources, (SelectNode)copy, syntax.Text, requireJoin, elementType));
+
+            return Expression.Lambda<Func<IEnumerable<IEnumerable>, IEnumerable<TResult>>>(body, parameter);
+        }
+
+        private static InvocationExpression Bare<TSource, TResult>(SelectNode select, ParameterExpression tables)
+        {
+            var source = Expression.Parameter(typeof(IEnumerable<TSource>), "source");
+            var query = Expression.Lambda(QueryTree.Build(select, source, typeof(TSource), typeof(TResult)), source);
+
+            return Expression.Invoke(query, Expression.Convert(TableSlot.Table(tables, 0), source.Type));
+        }
+
+        private static Dictionary<string, Type> Shape(IDictionary<string, IEnumerable> sources)
+        {
+            return sources.ToDictionary(s => s.Key, s => s.Value == null ? null : ElementType(s.Value));
         }
 
         private static Expression RunSelect<TSource, TResult>(
-            IDictionary<string, IEnumerable> sources,
+            Dictionary<string, IEnumerable> sources,
             SelectNode select,
             string sql,
             bool requireJoin,
@@ -136,7 +185,7 @@ namespace SqlLinq
             return QueryTree.Build(select, select.Layout.Rows, select.Layout.RowType, typeof(TResult));
         }
 
-        private static void Scope(IDictionary<string, IEnumerable> sources, SelectNode select, string key)
+        private static void Scope(Dictionary<string, IEnumerable> sources, SelectNode select, string key)
         {
             foreach (var subquery in select.FindDescendants<SelectNode>().Where(s => s.EnclosingSelect() == select))
             {
@@ -159,6 +208,11 @@ namespace SqlLinq
 
         internal static Expression Sequence(IEnumerable table, Type type)
         {
+            if (table is TableSlot slot)
+            {
+                return slot.Rows(type);
+            }
+
             var sequence = typeof(IEnumerable<>).MakeGenericType(type);
 
             return sequence.IsInstanceOfType(table)
@@ -168,6 +222,11 @@ namespace SqlLinq
 
         internal static Type ElementType(IEnumerable source)
         {
+            if (source is TableSlot slot)
+            {
+                return slot.ElementType;
+            }
+
             var type = source?.GetType() ?? typeof(object);
             var enumerable = type.GetInterfaces()
                 .Concat(new[] { type })
@@ -176,7 +235,7 @@ namespace SqlLinq
             return enumerable?.GetGenericArguments()[0] ?? typeof(object);
         }
 
-        private static Dictionary<string, IEnumerable> Cancellable(IDictionary<string, IEnumerable> sources, CancellationToken cancellationToken)
+        internal static Dictionary<string, IEnumerable> Cancellable(IDictionary<string, IEnumerable> sources, CancellationToken cancellationToken)
         {
             var wrap = typeof(SourcesExtensions).GetMethod(nameof(Rows), BindingFlags.NonPublic | BindingFlags.Static);
             return sources.ToDictionary(
@@ -194,7 +253,7 @@ namespace SqlLinq
         }
 
         private static JoinLayout Layout(
-            IDictionary<string, IEnumerable> sources,
+            Dictionary<string, IEnumerable> sources,
             List<(string Name, string Alias)> members,
             List<Join> joins,
             HashSet<string> scope)
@@ -233,7 +292,7 @@ namespace SqlLinq
         }
 
         private static IEnumerable Add(
-            IDictionary<string, IEnumerable> sources,
+            Dictionary<string, IEnumerable> sources,
             (string Name, string Alias) member,
             HashSet<string> aliases,
             List<HashSet<string>> names)
@@ -249,7 +308,7 @@ namespace SqlLinq
             return joined.Value;
         }
 
-        private static KeyValuePair<string, IEnumerable> Resolve(IDictionary<string, IEnumerable> sources, (string Name, string Alias) member, string fallback, bool onlyOne)
+        private static KeyValuePair<string, IEnumerable> Resolve(Dictionary<string, IEnumerable> sources, (string Name, string Alias) member, string fallback, bool onlyOne)
         {
             var source = sources.FirstOrDefault(s => s.Key.Equals(member.Alias, StringComparison.OrdinalIgnoreCase) || s.Key.Equals(member.Name, StringComparison.OrdinalIgnoreCase));
             if (source.Key != null)
@@ -303,7 +362,7 @@ namespace SqlLinq
 
         private static (string Alias, string Field) Side(string text, List<HashSet<string>> names)
         {
-            var dot = text.LastIndexOf('.');
+            var dot = text.EndsWith(']') ? text.LastIndexOf('[') - 1 : text.LastIndexOf('.');
             if (dot >= 0)
             {
                 return (SqlSyntax.Unbracket(text.Substring(0, dot)), SqlSyntax.Unbracket(text.Substring(dot + 1)));

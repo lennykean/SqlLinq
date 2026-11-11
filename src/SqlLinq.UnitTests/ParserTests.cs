@@ -70,5 +70,26 @@ namespace SqlLinq.UnitTests
             // Assert
             Assert.IsLessThan(100_000_000, allocated, $"Loading the grammar allocated {allocated / 1_000_000} MB.");
         }
+
+        [TestMethod]
+        [DataRow("SELECT * FROM this /* open")]
+        [DataRow("SELECT * FROM this /* open /* nested */")]
+        [DataRow("SELECT * FROM this WHERE weight > 150 /*")]
+        public void UnterminatedCommentIsAParseError(string sql)
+        {
+            // Arrange
+            var parser = new SqlParser();
+
+            // Act
+            var parsed = parser.Parse(sql);
+            var thrown = Assert.ThrowsExactly<SqlException>(() => TestData.GetPeople().Query(sql).ToList());
+
+            // Assert
+            Assert.IsFalse(parsed);
+            Assert.AreEqual("Comment Error. Unexpected end of input.", parser.ErrorString);
+            Assert.StartsWith("SQL parse error", thrown.Message);
+            Assert.AreEqual(sql.Length, thrown.Start);
+            Assert.AreEqual(0, thrown.Length);
+        }
     }
 }

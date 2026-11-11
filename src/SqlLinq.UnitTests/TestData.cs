@@ -21,27 +21,27 @@ namespace SqlLinq.UnitTests
 
         public static IEnumerable<int> GetInts()
         {
-            return new int[] { 4, 2, 3, 6, 6, 4, 120 };
+            return [4, 2, 3, 6, 6, 4, 120];
         }
 
         public static IEnumerable<int?> GetNullableInts()
         {
-            return new int?[] { 4, 2, null, 3, 6 };
+            return [4, 2, null, 3, 6];
         }
 
         public static IEnumerable<double> GetDoubles()
         {
-            return new double[] { 4.6, 2.1, 3.5, 6.9 };
+            return [4.6, 2.1, 3.5, 6.9];
         }
 
         public static IEnumerable<double?> GetNullableDoubles()
         {
-            return new double?[] { 4.6, 2.1, 3.5, null, 6.9 };
+            return [4.6, 2.1, 3.5, null, 6.9];
         }
 
         public static IEnumerable<float> GetFloats()
         {
-            return new float[] { 4.6f, 2.1f, 3.5f, 6.9f };
+            return [4.6f, 2.1f, 3.5f, 6.9f];
         }
 
         public static IEnumerable<Family> GetFamilies()

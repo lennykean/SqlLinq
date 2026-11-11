@@ -2,6 +2,8 @@
 using System.Collections;
 using System.Collections.Generic;
 
+using SqlLinq.SyntaxTree;
+
 namespace SqlLinq
 {
     public class ScalarJoinQuery<TSource, TInner, TResult> : QueryBase<TResult>
@@ -15,7 +17,7 @@ namespace SqlLinq
 
         protected override void OnCompile()
         {
-            Select = SyntaxNode.Columns.CreateScalarSelector<TSource, TInner, TResult>(Rows);
+            Select = ((SelectNode)Syntax.Root).Columns.CreateScalarSelector<TSource, TInner, TResult>(Rows);
         }
 
         public TResult Evaluate(IEnumerable<TSource> source, IEnumerable<TInner> inner)

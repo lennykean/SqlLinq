@@ -235,7 +235,7 @@ namespace SqlLinq.SyntaxTree
             return DefaultComparer(tResult);
         }
 
-        private static Expression Scoped(SelectNode select, ParameterExpression parameter, Func<Expression> body)
+        internal static Expression Scoped(SelectNode select, ParameterExpression parameter, Func<Expression> body)
         {
             var scopes = Scopes(select);
             var materialized = new List<(ParameterExpression Value, Expression Body)>();

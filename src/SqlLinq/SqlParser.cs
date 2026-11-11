@@ -18,7 +18,17 @@ namespace SqlLinq
     {
         private const string Placeholder = "$sqlfn";
 
+        private const string WherePrefix = "SELECT * FROM this WHERE ";
+
         private readonly Dictionary<string, ISqlFunction> _functions;
+
+        private readonly List<TerminalNode> _terminals = new List<TerminalNode>();
+
+        private readonly List<NonTerminalNode> _reductions = new List<NonTerminalNode>();
+
+        private readonly bool _lenient;
+
+        private int _offset;
 
         private Parser m_parser;
 
@@ -37,9 +47,26 @@ namespace SqlLinq
             }
         }
 
+        internal SqlParser(IEnumerable<ISqlFunction> functions, int offset, bool lenient)
+            : this(functions)
+        {
+            _offset = offset;
+            _lenient = lenient;
+        }
+
         public string ErrorString { get; private set; }
 
+        internal int ErrorStart { get; private set; } = -1;
+
+        internal int ErrorLength { get; private set; }
+
+        internal SqlException ArgumentError { get; private set; }
+
+        internal IEnumerable<NonTerminalNode> Fragments => _reductions.Where(n => n.Parent == null);
+
         public NonTerminalNode SyntaxTree { get; private set; }
+
+        internal ExpressionNode Expression { get; private set; }
 
         public string ErrorLine
         {
@@ -69,12 +96,37 @@ namespace SqlLinq
         {
             Debug.Assert(string.IsNullOrEmpty(source) == false);
 
-            var calls = SqlSyntax.FindCalls(source, _functions.Keys);
-            var text = SqlSyntax.ReplaceCalls(source, calls, i => "[" + Placeholder + i.ToString(CultureInfo.InvariantCulture) + "]");
+            List<FunctionCall> calls;
+            try
+            {
+                calls = SqlSyntax.FindCalls(source, _functions.Keys);
+            }
+            catch (SqlException e) when (_offset != 0)
+            {
+                throw new SqlException(e.Message, e.InnerException, e.Start + _offset, e.Length);
+            }
+
+            var text = SqlSyntax.ReplaceCalls(source, calls, PlaceholderFor);
+
+            ArgumentError = null;
 
             using (TextReader reader = new StringReader(text))
             {
-                if (!Parse(reader))
+                bool parsed;
+                try
+                {
+                    parsed = Parse(reader);
+                }
+                catch (SqlException e) when (e.Start < 0 && _reductions.Count > 0)
+                {
+                    Place(calls);
+                    var failed = _reductions[_reductions.Count - 1];
+
+                    throw new SqlException(e.Message, e.InnerException, failed.Start, failed.Length);
+                }
+
+                Place(calls);
+                if (!parsed)
                 {
                     return false;
                 }
@@ -86,11 +138,8 @@ namespace SqlLinq
                 {
                     var call = calls[int.Parse(node.Id.LookupId.Substring(Placeholder.Length), CultureInfo.InvariantCulture)];
                     node.Function = _functions[call.Name];
-                    node.Arguments = Arguments(call);
-                    foreach (var argument in node.Arguments)
-                    {
-                        argument.Node.Parent = node;
-                    }
+                    node.FunctionName = call.Name;
+                    node.Arguments = Arguments(call, node);
                 }
             }
 
@@ -99,33 +148,113 @@ namespace SqlLinq
             {
                 var call = calls[int.Parse(column.Id.LookupId.Substring(Placeholder.Length), CultureInfo.InvariantCulture)];
                 column.Function = _functions[call.Name];
-                column.Arguments = Arguments(call);
-                foreach (var argument in column.Arguments)
-                {
-                    argument.Node.Parent = column;
-                }
+                column.FunctionName = call.Name;
+                column.Arguments = Arguments(call, column);
             }
 
             return true;
         }
 
-        private List<(string Text, ExpressionNode Node)> Arguments(FunctionCall call)
+        internal bool ParseExpression(string expression)
         {
-            var arguments = new List<(string Text, ExpressionNode Node)>();
+            _offset -= WherePrefix.Length;
+            try
+            {
+                if (!Parse(WherePrefix + expression))
+                {
+                    return false;
+                }
+            }
+            finally
+            {
+                _offset += WherePrefix.Length;
+            }
+
+            Expression = ((SelectNode)SyntaxTree).WhereClause.FindChild<ExpressionNode>();
+            Expression.Parent = null;
+            Expression.Source = expression;
+
+            return true;
+        }
+
+        private static string PlaceholderFor(int index)
+        {
+            return "[" + Placeholder + index.ToString(CultureInfo.InvariantCulture) + "]";
+        }
+
+        private void Place(List<FunctionCall> calls)
+        {
+            foreach (var terminal in _terminals)
+            {
+                var (start, length) = ToSource(calls, terminal.Start, terminal.Length);
+                terminal.Place(start, length);
+            }
+
+            if (ErrorStart >= 0)
+            {
+                (ErrorStart, ErrorLength) = ToSource(calls, ErrorStart, ErrorLength);
+            }
+        }
+
+        private (int Start, int Length) ToSource(List<FunctionCall> calls, int start, int length)
+        {
+            var shift = 0;
+            for (var i = 0; i < calls.Count && start >= calls[i].Start + shift; i++)
+            {
+                var call = calls[i].End - calls[i].Start + 1;
+                var placeholder = PlaceholderFor(i).Length;
+                if (start < calls[i].Start + shift + placeholder)
+                {
+                    return (calls[i].Start + _offset, call);
+                }
+
+                shift += placeholder - call;
+            }
+
+            return (start - shift + _offset, length);
+        }
+
+        private List<ArgumentNode> Arguments(FunctionCall call, NonTerminalNode node)
+        {
+            var arguments = new List<ArgumentNode>();
             if (call.Args.Trim().Length == 0)
             {
                 return arguments;
             }
 
+            var at = 0;
             foreach (var text in SqlSyntax.SplitTopLevel(call.Args))
             {
-                var parser = new SqlParser(_functions.Values);
-                if (!parser.Parse("SELECT * FROM this WHERE " + text))
+                at = call.Args.IndexOf(text, at, StringComparison.Ordinal);
+                var start = _offset + call.End - call.Args.Length + at;
+                var parser = new SqlParser(_functions.Values, start, _lenient);
+                ExpressionNode expression = null;
+                SqlException error;
+                try
                 {
-                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin argument\n\t{1}\nof {2}()", parser.ErrorString, text.Trim(), call.Name));
+                    error = parser.ParseExpression(text)
+                        ? parser.ArgumentError
+                        : new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin argument\n\t{1}\nof {2}()", parser.ErrorString, text.Trim(), call.Name), parser.ErrorStart, parser.ErrorLength);
+                }
+                catch (SqlException e) when (_lenient)
+                {
+                    error = e;
                 }
 
-                arguments.Add((text.Trim(), ((SelectNode)parser.SyntaxTree).WhereClause.FindChild<ExpressionNode>()));
+                if (error != null && !_lenient)
+                {
+                    throw error;
+                }
+
+                if (parser.Expression != null && (error == null || error == parser.ArgumentError))
+                {
+                    expression = parser.Expression;
+                    expression.Parent = node;
+                }
+
+                ArgumentError ??= error;
+                arguments.Add(new ArgumentNode(text.Trim(), expression, error, start, text.Length) { Parent = node });
+                at += text.Length;
             }
 
             return arguments;
@@ -137,13 +266,19 @@ namespace SqlLinq
 
             m_parser = ParserFactory.CreateParser(sourceReader);
             m_parser.TrimReductions = true;
+            ErrorStart = -1;
+            ErrorLength = 0;
+            _terminals.Clear();
+            _reductions.Clear();
 
             while (true)
             {
-                switch (m_parser.Parse())
+                switch (ParseNext())
                 {
                     case ParseMessage.LexicalError:
                         ErrorString = string.Format(CultureInfo.CurrentCulture, "Lexical Error. Line {0}. Token {1} was not expected.", m_parser.LineNumber, m_parser.TokenText);
+                        ErrorStart = m_parser.TokenCharPosition;
+                        ErrorLength = m_parser.TokenLength;
                         return false;
 
                     case ParseMessage.SyntaxError:
@@ -152,12 +287,15 @@ namespace SqlLinq
                             text.AppendFormat(CultureInfo.CurrentCulture, " {0}", tokenSymbol);
 
                         ErrorString = string.Format(CultureInfo.CurrentCulture, "Syntax Error. Line {0}. Expecting: {1}.", m_parser.LineNumber, text);
+                        ErrorStart = m_parser.TokenCharPosition;
+                        ErrorLength = m_parser.TokenLength;
 
                         return false;
 
                     case ParseMessage.Reduction:
                         NonTerminalNode nonTerminal = SyntaxRuleFactory.CreateNode(m_parser.ReductionRule);
                         m_parser.TokenSyntaxNode = nonTerminal;
+                        _reductions.Add(nonTerminal);
 
                         for (int i = 0; i < m_parser.ReductionCount; i++)
                             nonTerminal.AppendChildNode(m_parser.GetReductionSyntaxNode(i) as SyntaxNode);
@@ -169,7 +307,9 @@ namespace SqlLinq
                         break;
 
                     case ParseMessage.TokenRead:
-                        m_parser.TokenSyntaxNode = new TerminalNode(m_parser);
+                        var terminal = new TerminalNode(m_parser);
+                        _terminals.Add(terminal);
+                        m_parser.TokenSyntaxNode = terminal;
                         break;
 
                     case ParseMessage.Accept:
@@ -187,6 +327,8 @@ namespace SqlLinq
 
                     case ParseMessage.CommentError:
                         ErrorString = "Comment Error. Unexpected end of input.";
+                        ErrorStart = m_parser.TokenCharPosition;
+                        ErrorLength = m_parser.TokenLength;
                         return false;
 
                     case ParseMessage.CommentBlockRead:
@@ -194,6 +336,18 @@ namespace SqlLinq
                         // don't do anything 
                         break;
                 }
+            }
+        }
+
+        private ParseMessage ParseNext()
+        {
+            try
+            {
+                return m_parser.Parse();
+            }
+            catch (Exception e) when (e.Message == "CommentError")
+            {
+                return ParseMessage.CommentError;
             }
         }
     }

@@ -62,6 +62,15 @@ namespace SqlLinq.SyntaxTree
             }
         }
 
+        public virtual int Start => -1;
+
+        public virtual int Length => 0;
+
+        public virtual string ToSql()
+        {
+            return string.Empty;
+        }
+
         public abstract XElement ToXml();
     }
 }

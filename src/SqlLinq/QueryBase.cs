@@ -2,18 +2,12 @@
 using System.Linq;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 
 using SqlLinq.SyntaxTree;
 
 namespace SqlLinq
 {
-    internal interface ICompile
-    {
-        void Compile(SelectNode syntaxNode);
-    }
-
-    public abstract class QueryBase<TResult> : ICompile
+    public abstract class QueryBase<TResult>
     {
         protected QueryBase(string sql)
         {
@@ -29,32 +23,25 @@ namespace SqlLinq
 
         private readonly IEnumerable<ISqlFunction> _functions;
 
-        void ICompile.Compile(SelectNode syntaxNode)
-        {
-            SyntaxNode = syntaxNode;
-            OnCompile();
-        }
-
         public void Compile()
         {
-            SqlParser parser = new SqlParser(_functions);
-            if (!parser.Parse(Sql))
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin statement\n\t{1}", parser.ErrorString, parser.ErrorLine));
+            var syntax = SqlSyntaxTree.Parse(Sql, _functions);
+            if (syntax.Error != null)
+                throw syntax.Error;
 
-            if (parser.SyntaxTree is UnionNode)
+            if (syntax.Root is UnionNode)
             {
                 throw new SqlException("A compiled query can't run a UNION; use the Query extension methods instead.");
             }
 
-            SyntaxNode = parser.SyntaxTree as SelectNode;
-            Debug.Assert(SyntaxNode != null);
+            Syntax = syntax;
 
             OnCompile();
         }
 
         protected abstract void OnCompile();
 
-        internal SelectNode SyntaxNode { get; private set; }
+        internal SqlSyntaxTree Syntax { get; private set; }
 
         public string Sql { get; private set; }
 

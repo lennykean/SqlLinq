@@ -1,8 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
+﻿using System.Linq.Expressions;
 
 namespace SqlLinq.TimeSeries
 {
-    delegate object Aggregate<T>(IReadOnlyList<(TimeSpan Time, T Item)> rows, TimeSpan window);
+    delegate Expression Aggregate(Expression rows, Expression window);
 }

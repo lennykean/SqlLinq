@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Diagnostics;
 using System.Text;
@@ -26,7 +27,36 @@ namespace SqlLinq.SyntaxTree
 
         internal Rule Rule { get; set; }
 
-        internal IReadOnlyList<SyntaxNode> Children => m_children;
+        public IReadOnlyList<SyntaxNode> Children => m_children;
+
+        public override int Start => Terminals().FirstOrDefault(t => t.Start >= 0)?.Start ?? -1;
+
+        public override int Length
+        {
+            get
+            {
+                var terminals = Terminals().Where(t => t.Start >= 0).ToList();
+
+                return terminals.Count == 0 ? 0 : terminals[^1].Start + terminals[^1].Length - terminals[0].Start;
+            }
+        }
+
+        public override string ToSql()
+        {
+            SqlException.ThrowIfNestedTooDeeply();
+
+            return JoinSql(m_children.Select(c => c.ToSql()));
+        }
+
+        public NonTerminalNode Replace(Func<NonTerminalNode, NonTerminalNode> replacement)
+        {
+            if (replacement == null)
+            {
+                throw new ArgumentNullException(nameof(replacement));
+            }
+
+            return Copy(replacement);
+        }
 
         /// <summary>
         /// This method is used during parsing to enforce syntax rules not expressed in the grammar
@@ -55,8 +85,81 @@ namespace SqlLinq.SyntaxTree
 
         internal protected string GetTerminalText(string name)
         {
-            TerminalNode terminal = m_children.OfType<TerminalNode>().SingleOrDefault(node => node.Symbol.Name == name);
+            TerminalNode terminal = GetTerminal(name);
             return terminal != null ? terminal.Text : string.Empty;
+        }
+
+        internal TerminalNode GetTerminal(string name)
+        {
+            return m_children.OfType<TerminalNode>().SingleOrDefault(node => node.Symbol.Name == name);
+        }
+
+        internal IEnumerable<TerminalNode> Terminals()
+        {
+            var pending = new Stack<SyntaxNode>(m_children.AsEnumerable().Reverse());
+            while (pending.Count > 0)
+            {
+                var node = pending.Pop();
+                if (node is TerminalNode terminal)
+                {
+                    yield return terminal;
+                }
+                else
+                {
+                    foreach (var child in ((NonTerminalNode)node).m_children.AsEnumerable().Reverse())
+                    {
+                        pending.Push(child);
+                    }
+                }
+            }
+        }
+
+        internal NonTerminalNode Copy()
+        {
+            return Copy(node => null);
+        }
+
+        internal NonTerminalNode Copy(Func<NonTerminalNode, NonTerminalNode> replacement)
+        {
+            SqlException.ThrowIfNestedTooDeeply();
+            var replaced = replacement(this);
+            if (replaced != null && replaced != this)
+            {
+                return replaced.Copy();
+            }
+
+            var copy = SyntaxRuleFactory.CreateNode(Rule);
+            foreach (var child in m_children)
+            {
+                copy.AppendChildNode(child is NonTerminalNode node ? (SyntaxNode)node.Copy(replacement) : ((TerminalNode)child).Copy());
+            }
+
+            CopyTo(copy, replacement);
+
+            return copy;
+        }
+
+        internal virtual void CopyTo(NonTerminalNode copy, Func<NonTerminalNode, NonTerminalNode> replacement)
+        {
+        }
+
+        internal static string JoinSql(IEnumerable<string> parts)
+        {
+            var sql = new StringBuilder();
+            var previous = string.Empty;
+            foreach (var part in parts.Where(p => p.Length > 0))
+            {
+                var call = part == "(" && previous.Length > 0 && char.IsLetter(previous[previous.Length - 1]) && !SqlSyntax.Keywords.Contains(previous, StringComparer.OrdinalIgnoreCase);
+                if (sql.Length > 0 && !previous.EndsWith('(') && part != ")" && part != "," && !call)
+                {
+                    sql.Append(' ');
+                }
+
+                sql.Append(part);
+                previous = part;
+            }
+
+            return sql.ToString();
         }
 
         internal protected IEnumerable<T> FindDescendants<T>() where T : NonTerminalNode

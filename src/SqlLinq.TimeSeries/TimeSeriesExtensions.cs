@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Threading;
 
+using SqlLinq.SyntaxTree.Expressions;
+
 namespace SqlLinq.TimeSeries
 {
     public static class TimeSeriesExtensions
@@ -10,7 +12,7 @@ namespace SqlLinq.TimeSeries
             this IEnumerable<T> source,
             string sql,
             Func<T, TimeSpan> time,
-            Func<string, string> rewrite = null)
+            Func<ExpressionNode, ExpressionNode> rewrite = null)
         {
             return new TimeSeriesQuery<T>(sql, time, rewrite).Evaluate(source);
         }
@@ -19,7 +21,7 @@ namespace SqlLinq.TimeSeries
             this IEnumerable<T> source,
             string sql,
             Func<T, TimeSpan> time,
-            Func<string, string> rewrite,
+            Func<ExpressionNode, ExpressionNode> rewrite,
             IEnumerable<ISqlFunction> functions,
             CancellationToken cancellationToken = default)
         {

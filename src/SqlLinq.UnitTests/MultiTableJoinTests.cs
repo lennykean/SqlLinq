@@ -231,5 +231,44 @@ namespace SqlLinq.UnitTests
             Assert.AreEqual("Bortus/Orville; Talla Keyali/Roosevelt; Talla Keyali/Roosevelt Shuttle", Orville.Rows(inner));
             Assert.AreEqual("Roosevelt/Exploration; Roosevelt Shuttle/", Orville.Rows(left));
         }
+
+        [TestMethod]
+        [DataRow("c.ShipId = s.Id")]
+        [DataRow("c.[ShipId] = s.[Id]")]
+        [DataRow("[c].[ShipId] = [s].[Id]")]
+        [DataRow("[c].ShipId = [s].Id")]
+        [DataRow("s.Id = c.ShipId")]
+        public void BracketedJoinKeysJoinLikePlainOnes(string on)
+        {
+            // Arrange
+            var sql = "SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON " + on + " WHERE c.Rank = 3";
+
+            // Act
+            var typed = Orville.Tables().Query<Tuple<string, string>>(sql);
+            var dictionaries = Orville.DictionaryTables().Query<Tuple<string, string>>(sql);
+
+            // Assert
+            Assert.AreEqual("Bortus/Orville; Talla Keyali/Roosevelt", Orville.Rows(typed));
+            Assert.AreEqual("Bortus/Orville; Talla Keyali/Roosevelt", Orville.Rows(dictionaries));
+        }
+
+        [TestMethod]
+        [DataRow("c.ShipId = s.[Ship.Id]")]
+        [DataRow("s.[Ship.Id] = c.[ShipId]")]
+        public void BracketedJoinKeysCanHoldADot(string on)
+        {
+            // Arrange
+            var tables = new Dictionary<string, IEnumerable>
+            {
+                ["crew"] = Orville.CrewDictionaries(),
+                ["ships"] = Orville.ShipDictionaries().Select(s => (IDictionary<string, object>)new Dictionary<string, object> { ["Ship.Id"] = s["Id"], ["Name"] = s["Name"] }).ToList(),
+            };
+
+            // Act
+            var result = tables.Query<Tuple<string, string>>("SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON " + on + " WHERE c.Rank = 3");
+
+            // Assert
+            Assert.AreEqual("Bortus/Orville; Talla Keyali/Roosevelt", Orville.Rows(result));
+        }
     }
 }

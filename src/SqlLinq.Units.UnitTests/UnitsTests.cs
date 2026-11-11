@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using SqlLinq.SyntaxTree.Expressions;
 using SqlLinq.TimeSeries;
 using UnitsNet;
 using UnitsNet.Metadata;
@@ -27,7 +28,12 @@ namespace SqlLinq.Units.UnitTests
 
         private static IList<IDictionary<string, object>> Run(string nrql)
         {
-            return new TimeSeriesQuery<Frame>(nrql, f => TimeSpan.FromSeconds(f.Time), Units.Expand).Evaluate(Frames);
+            return new TimeSeriesQuery<Frame>(nrql, f => TimeSpan.FromSeconds(f.Time), Units.Expand, [Units]).Evaluate(Frames);
+        }
+
+        private static ExpressionNode Parse(string expression, UnitConversions units)
+        {
+            return (ExpressionNode)SqlSyntaxTree.ParseExpression(expression, [units]).Root;
         }
 
         private static double Max(string expression)
@@ -100,13 +106,13 @@ namespace SqlLinq.Units.UnitTests
         {
             // Arrange
             var plasmaPressure = new Frame().GetObjectMetadata(CultureInfo.InvariantCulture)["PlasmaPressure"];
-            var units = new UnitConversions(new[] { new QuantityMetadata(plasmaPressure.Property, plasmaPressure.Unit, plasmaPressure.Conversions.Skip(1).ToList()) });
+            var units = new UnitConversions([new QuantityMetadata(plasmaPressure.Property, plasmaPressure.Unit, plasmaPressure.Conversions.Skip(1).ToList())]);
 
             // Act
-            var expanded = units.Expand("convert(PlasmaPressure, 'kPa')");
+            var expanded = units.Expand(Parse("convert(PlasmaPressure, 'kPa')", units));
 
             // Assert
-            Assert.AreEqual("((PlasmaPressure) * 1.0 + 0.0)", expanded);
+            Assert.AreEqual("((PlasmaPressure) * 1.0 + 0.0)", expanded.ToSql());
         }
 
         [TestMethod]
@@ -127,10 +133,10 @@ namespace SqlLinq.Units.UnitTests
         {
             // Arrange
             var scan = new QuantityMetadata(typeof(Frame).GetProperty(nameof(Frame.Scan)), null, []);
-            var units = new UnitConversions(new[] { scan });
+            var units = new UnitConversions([scan]);
 
             // Act & Assert
-            var e = Assert.ThrowsExactly<SqlException>(() => units.Expand("convert(Scan, 'psi')"));
+            var e = Assert.ThrowsExactly<SqlException>(() => units.Expand(Parse("convert(Scan, 'psi')", units)));
             Assert.Contains("needs a column with unit metadata", e.Message);
             Fails("convert(CoreTemp * 2, '°F')", "needs a column with unit metadata");
         }
@@ -200,7 +206,7 @@ namespace SqlLinq.Units.UnitTests
         {
             // Arrange
             var rows = new double?[] { 20, null, 95 }.Select(coreTemp => (IDictionary<string, object>)new Dictionary<string, object> { ["CoreTemp"] = coreTemp }).ToList();
-            var query = new TimeSeriesQuery<IDictionary<string, object>>("SELECT count(*) AS N, count(convert(CoreTemp, '°F')) AS F, max(convert(CoreTemp, '°F')) AS Hottest FROM shipslog WHERE convert(CoreTemp, '°F') > 100 OR CoreTemp IS NULL", r => TimeSpan.Zero, Units.Expand);
+            var query = new TimeSeriesQuery<IDictionary<string, object>>("SELECT count(*) AS N, count(convert(CoreTemp, '°F')) AS F, max(convert(CoreTemp, '°F')) AS Hottest FROM shipslog WHERE convert(CoreTemp, '°F') > 100 OR CoreTemp IS NULL", r => TimeSpan.Zero, Units.Expand, [Units]);
 
             // Act
             var row = query.Evaluate(rows).Single();
@@ -220,16 +226,16 @@ namespace SqlLinq.Units.UnitTests
             try
             {
                 // Act
-                var comparison = Units.Expand("convert(CoreTemp, '°F') > 150");
-                var negativeOffset = Units.Expand("convert(Scan, 'Temperature.K', '°C')");
-                var nested = Units.Expand("convert(convert(PlasmaPressure, 'bar'), 'Pressure.bar', 'psi')");
-                var unchanged = Units.Expand("no conversions here");
+                var comparison = Units.Expand(Parse("convert(CoreTemp, '°F') > 150", Units)).ToSql();
+                var negativeOffset = Units.Expand(Parse("convert(Scan, 'Temperature.K', '°C')", Units)).ToSql();
+                var nested = Units.Expand(Parse("convert(convert(PlasmaPressure, 'bar'), 'Pressure.bar', 'psi')", Units)).ToSql();
+                var unchanged = Units.Expand(Parse("CoreTemp * 2 > 150", Units)).ToSql();
 
                 // Assert
                 Assert.AreEqual("((CoreTemp) * 1.8 + 32.0) > 150", comparison);
                 Assert.AreEqual("((Scan) * 1.0 + (-273.15))", negativeOffset);
                 Assert.AreEqual("((((PlasmaPressure) * 0.01 + 0.0)) * 14.5037737730209 + 0.0)", nested);
-                Assert.AreEqual("no conversions here", unchanged);
+                Assert.AreEqual("CoreTemp * 2 > 150", unchanged);
             }
             finally
             {
@@ -244,7 +250,7 @@ namespace SqlLinq.Units.UnitTests
         public void BadCallsThrowSqlException(string expression, string message)
         {
             // Act & Assert
-            var e = Assert.ThrowsExactly<SqlException>(() => Units.Expand(expression));
+            var e = Assert.ThrowsExactly<SqlException>(() => Units.Expand(Parse(expression, Units)));
             Assert.IsTrue(e.Message.StartsWith(message, StringComparison.Ordinal), e.Message);
         }
 
@@ -259,13 +265,14 @@ namespace SqlLinq.Units.UnitTests
         }
 
         [TestMethod]
-        public void UnitQueryRunsTheRewriteBeforeConverting()
+        public void PipelineRewritesTheTreeBeforeConverting()
         {
+            // Arrange
+            var condition = Parse("convert(CoreTemp, '°F') > 190", Units);
+            var syntax = SqlSyntaxTree.Parse("SELECT * FROM this WHERE Hot", [Units]);
+
             // Act
-            var hot = Frames.UnitQuery(
-                "SELECT * FROM this WHERE hot()",
-                Units,
-                sql => sql.Replace("hot()", "convert(CoreTemp, '°F') > 190", StringComparison.Ordinal));
+            var hot = syntax.Replace(n => n is NodeWithId id && id.Id.LookupId == "Hot" ? condition : null).Compile<Frame, Frame>().Execute(Frames);
 
             // Assert
             CollectionAssert.AreEqual(Frames.Where(f => f.CoreTemp * 1.8 + 32 > 190).ToList(), hot.ToList());

@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 
+using SqlLinq.SyntaxTree;
+
 namespace SqlLinq
 {
     public class JoinQuery<TSource, TInner, TResult> : QueryBase<TResult>
@@ -13,7 +15,7 @@ namespace SqlLinq
 
         protected override void OnCompile()
         {
-            if (SyntaxNode.FromClause.Join == null)
+            if (((SelectNode)Syntax.Root).FromClause.Join == null)
                 throw new SqlException("The query does not contain a JOIN expression\n" + Sql);
         }
 

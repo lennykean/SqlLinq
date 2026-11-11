@@ -105,26 +105,5 @@ namespace SqlLinq
 
             return SourcesExtensions.Run<TSource, TResult>(new Dictionary<string, IEnumerable> { ["this"] = enumerable, ["that"] = inner }, sql, null, true);
         }
-
-        public static IEnumerable<TSource> ExtensionQuery<TSource>(
-            this IEnumerable<TSource> enumerable,
-            string sql,
-            Func<string, string> rewrite)
-        {
-            return enumerable.ExtensionQuery<TSource, TSource>(sql, rewrite);
-        }
-
-        public static IEnumerable<TResult> ExtensionQuery<TSource, TResult>(
-            this IEnumerable<TSource> enumerable,
-            string sql,
-            Func<string, string> rewrite)
-        {
-            if (rewrite == null)
-            {
-                throw new ArgumentNullException(nameof(rewrite));
-            }
-
-            return enumerable.Query<TSource, TResult>(rewrite(sql));
-        }
     }
 }

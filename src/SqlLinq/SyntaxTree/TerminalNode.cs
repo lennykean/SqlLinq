@@ -7,6 +7,10 @@ namespace SqlLinq.SyntaxTree
 {
     public class TerminalNode : SyntaxNode
     {
+        private int _start;
+
+        private int _length;
+
         internal TerminalNode(Parser parser)
         {
             Debug.Assert(parser != null);
@@ -15,6 +19,18 @@ namespace SqlLinq.SyntaxTree
             Text = parser.TokenText;
             LineNumber = parser.LineNumber;
             LinePosition = parser.LinePosition;
+            _start = parser.TokenCharPosition;
+            _length = parser.TokenLength;
+        }
+
+        private TerminalNode(TerminalNode original)
+        {
+            Symbol = original.Symbol;
+            Text = original.Text;
+            LineNumber = original.LineNumber;
+            LinePosition = original.LinePosition;
+            _start = original._start;
+            _length = original._length;
         }
 
         internal Symbol Symbol { get; private set; }
@@ -25,6 +41,15 @@ namespace SqlLinq.SyntaxTree
 
         public int LinePosition { get; private set; }
 
+        public override int Start => _start;
+
+        public override int Length => _length;
+
+        public override string ToSql()
+        {
+            return Text;
+        }
+
         public override string ToString()
         {
             return Text;
@@ -33,6 +58,23 @@ namespace SqlLinq.SyntaxTree
         public override XElement ToXml()
         {
             return new XElement("terminal", Text);
+        }
+
+        internal TerminalNode Copy()
+        {
+            return new TerminalNode(this);
+        }
+
+        internal void Place(int start, int length)
+        {
+            _start = start;
+            _length = length;
+        }
+
+        internal void Locate(int line, int position)
+        {
+            LineNumber = line;
+            LinePosition = position;
         }
     }
 }
