@@ -4,12 +4,13 @@ using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
+using MoreLinq;
 
 namespace SqlLinq.TimeSeries
 {
     public class TimeSeriesQuery<T>
     {
-        private static readonly Regex Keywords = new Regex(@"'[^']*'|\[[^\]]*\]|\b(WHERE|FACET|SINCE|UNTIL|TIMESERIES|LIMIT|COMPARE|GROUP|HAVING|ORDER)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        private static readonly Regex Keywords = new Regex(@"'[^']*'|\[[^\]]*\]|\b(WHERE|FACET|SINCE|UNTIL|TIMESERIES|SESSION|LIMIT|COMPARE|GROUP|HAVING|ORDER)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         private static readonly Regex SelectFrom = new Regex(@"^\s*SELECT\s+(.+?)\s+FROM\s+(\[[^\]]+\]|\w+)\s*$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
         private static readonly Regex Alias = new Regex(@"^(.+?)\s+AS\s+(\[[^\]]+\]|\w+)$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
         private static readonly Regex CompareWith = new Regex(@"^WITH\s+(.+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline);
@@ -25,6 +26,7 @@ namespace SqlLinq.TimeSeries
         private readonly Bound _until;
         private readonly TimeSpan? _compare;
         private readonly long? _bucketTicks;
+        private readonly TimeSpan? _gap;
         private readonly int? _limit;
 
         public TimeSeriesQuery(string nrql, Func<T, TimeSpan> time, Func<string, string> rewrite = null)
@@ -104,6 +106,21 @@ namespace SqlLinq.TimeSeries
                 _bucketTicks = size.Offset.Ticks;
             }
 
+            if (clauses.TryGetValue("SESSION", out var session))
+            {
+                var gap = Bound.Parse(session, "SESSION");
+                if (gap.Ago || gap.Offset <= TimeSpan.Zero)
+                {
+                    throw new SqlException("SESSION needs a positive gap, e.g. SESSION 1 second.");
+                }
+                if (_bucketTicks != null)
+                {
+                    throw new SqlException("SESSION and TIMESERIES can't be used together.");
+                }
+
+                _gap = gap.Offset;
+            }
+
             if (clauses.TryGetValue("LIMIT", out var limit))
             {
                 if (!int.TryParse(limit, NumberStyles.None, CultureInfo.InvariantCulture, out var n) || n < 1)
@@ -118,9 +135,9 @@ namespace SqlLinq.TimeSeries
                 _limit = n;
             }
 
-            if (!aggregated && (_facets.Count > 0 || _bucketTicks != null))
+            if (!aggregated && (_facets.Count > 0 || _bucketTicks != null || _gap != null))
             {
-                throw new SqlException("FACET and TIMESERIES need aggregate functions in SELECT, e.g. average(RPM).");
+                throw new SqlException("FACET, TIMESERIES, and SESSION need aggregate functions in SELECT, e.g. average(RPM).");
             }
         }
 
@@ -297,6 +314,20 @@ namespace SqlLinq.TimeSeries
                     let groupRows = g.ToList()
                     orderby Values.SortKey(_aggregates[0].Aggregate(groupRows, window)) descending
                     select (Key: g.Key.Values, Rows: groupRows)).Take(_limit ?? int.MaxValue).ToList();
+
+            if (_gap != null)
+            {
+                foreach (var (Key, Rows) in groups)
+                {
+                    foreach (var segment in Rows.OrderBy(r => r.Time).Segment((current, previous, _) => current.Time - previous.Time > _gap.Value))
+                    {
+                        var session = segment.ToList();
+                        result.Add(CreateRow(Key, session, session[^1].Time - session[0].Time, comparison, session[0].Time.Ticks));
+                    }
+                }
+
+                return;
+            }
 
             if (_bucketTicks == null)
             {

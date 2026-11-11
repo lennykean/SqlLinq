@@ -216,6 +216,112 @@ namespace SqlLinq.TimeSeries.UnitTests
         }
 
         [TestMethod]
+        public void SessionSplitsRowsAtALongerGap()
+        {
+            // Arrange
+            var query = new TimeSeriesQuery<Sample>("SELECT min(PlasmaPressure) AS Low, max(PlasmaPressure) AS High, rate(count(*), 1 second) AS R FROM shipslog SESSION 1 second", s => TimeSpan.FromSeconds(s.Time));
+            var samples = GetSamples().Where(s => s.Id != 4 && s.Id != 5).ToList();
+
+            // Act
+            var rows = query.Evaluate(samples);
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { TimeSpan.Zero, TimeSpan.FromSeconds(2.5) }, Column(rows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3.5) }, Column(rows, "EndTime"));
+            CollectionAssert.AreEqual(new object[] { 30.5, 29.9 }, Column(rows, "Low"));
+            CollectionAssert.AreEqual(new object[] { 85.2, 92.0 }, Column(rows, "High"));
+            CollectionAssert.AreEqual(new object[] { 3.0, 3.0 }, Column(rows, "R"));
+        }
+
+        [TestMethod]
+        [DataRow("1 second")]
+        [DataRow("500 ms")]
+        public void SessionKeepsRowsWithinTheGapTogether(string gap)
+        {
+            // Act
+            var row = Run("SELECT count(*) AS N FROM shipslog SESSION " + gap).Single();
+
+            // Assert
+            Assert.AreEqual(8, row["N"]);
+            Assert.AreEqual(TimeSpan.Zero, row["BeginTime"]);
+            Assert.AreEqual(TimeSpan.FromSeconds(3.5), row["EndTime"]);
+        }
+
+        [TestMethod]
+        public void WhereFiltersBeforeSessionSoEachPullIsARow()
+        {
+            // Act
+            var rows = Run("SELECT count(*) AS N, max(DriveSpin) AS TopSpin FROM shipslog WHERE PlasmaPressure > 90 SESSION 500 ms");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(1.5), TimeSpan.FromSeconds(3) }, Column(rows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(3) }, Column(rows, "EndTime"));
+            CollectionAssert.AreEqual(new object[] { 2, 1 }, Column(rows, "N"));
+            CollectionAssert.AreEqual(new object[] { 7900, 5600 }, Column(rows, "TopSpin"));
+        }
+
+        [TestMethod]
+        public void MathFunctionInsideAnAggregateInASession()
+        {
+            // Act
+            var rows = Run("SELECT max(abs(DriveSpin - 5000)) AS Off FROM shipslog WHERE PlasmaPressure > 90 SESSION 500 ms");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { 2900, 600 }, Column(rows, "Off"));
+        }
+
+        [TestMethod]
+        public void FacetWithSession()
+        {
+            // Act
+            var rows = Run("SELECT max(DriveSpin) AS TopSpin FROM shipslog FACET Quantum SESSION 500 ms");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { true, true, false, false, false }, Column(rows, "Quantum"));
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(1.5), TimeSpan.FromSeconds(3), TimeSpan.Zero, TimeSpan.FromSeconds(2.5), TimeSpan.FromSeconds(3.5) }, Column(rows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { 7900, 5600, 4800, 3100, 850 }, Column(rows, "TopSpin"));
+        }
+
+        [TestMethod]
+        public void CompareWithSession()
+        {
+            // Act
+            var rows = Run("SELECT count(*) AS N, max(DriveSpin) AS TopSpin FROM shipslog WHERE PlasmaPressure > 50 SINCE 2 UNTIL 4 SESSION 500 ms COMPARE WITH 2 seconds ago");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { "current", "current", "previous" }, Column(rows, "Comparison"));
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(0.5) }, Column(rows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(1.5) }, Column(rows, "EndTime"));
+            CollectionAssert.AreEqual(new object[] { 1, 1, 3 }, Column(rows, "N"));
+            CollectionAssert.AreEqual(new object[] { 7900, 5600, 6200 }, Column(rows, "TopSpin"));
+        }
+
+        [TestMethod]
+        public void SinceAndUntilTrimSessions()
+        {
+            // Act
+            var rows = Run("SELECT count(*) AS N FROM shipslog WHERE PlasmaPressure > 50 SINCE 1 UNTIL 3 SESSION 500 ms");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(1) }, Column(rows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(2) }, Column(rows, "EndTime"));
+            CollectionAssert.AreEqual(new object[] { 3 }, Column(rows, "N"));
+        }
+
+        [TestMethod]
+        public void LimitKeepsTopFacetsAcrossSessions()
+        {
+            // Act
+            var rows = Run("SELECT max(DriveSpin) AS TopSpin FROM shipslog FACET Quantum LIMIT 1 SESSION 500 ms");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { true, true }, Column(rows, "Quantum"));
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(1.5), TimeSpan.FromSeconds(3) }, Column(rows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(3) }, Column(rows, "EndTime"));
+            CollectionAssert.AreEqual(new object[] { 7900, 5600 }, Column(rows, "TopSpin"));
+        }
+
+        [TestMethod]
         public void EmptyBucketsAreFilled()
         {
             // Act
@@ -406,18 +512,28 @@ namespace SqlLinq.TimeSeries.UnitTests
         [DataRow("SELECT count(*) FROM shipslog TIMESERIES 0 seconds", "TIMESERIES ")]
         [DataRow("SELECT count(*) FROM shipslog TIMESERIES fast", "TIMESERIES ")]
         [DataRow("SELECT count(*) FROM shipslog TIMESERIES 1 second ago", "TIMESERIES ")]
+        [DataRow("SELECT count(*) FROM shipslog SESSION 0 seconds", "SESSION needs ")]
+        [DataRow("SELECT count(*) FROM shipslog SESSION -1 second", "SESSION -1 second isn't a duration")]
+        [DataRow("SELECT count(*) FROM shipslog SESSION 1 second ago", "SESSION needs ")]
+        [DataRow("SELECT count(*) FROM shipslog TIMESERIES 1 second SESSION 1 second", "SESSION and TIMESERIES ")]
         [DataRow("SELECT count(*) FROM shipslog SINCE yesterday", "SINCE ")]
         [DataRow("SELECT count(*) FROM shipslog LIMIT 0", "LIMIT ")]
         [DataRow("SELECT count(*) FROM shipslog TIMESERIES 1 second LIMIT 5", "LIMIT ")]
         [DataRow("SELECT count(*), DriveSpin FROM shipslog", "'DriveSpin' isn't an aggregate")]
         [DataRow("SELECT count(*), DriveSpin AS DriveStage FROM shipslog FACET DriveStage", "'DriveSpin' isn't an aggregate")]
-        [DataRow("SELECT DriveSpin FROM shipslog TIMESERIES 1 second", "FACET and TIMESERIES ")]
-        [DataRow("SELECT DriveSpin FROM shipslog FACET DriveStage", "FACET and TIMESERIES ")]
+        [DataRow("SELECT DriveSpin FROM shipslog TIMESERIES 1 second", "FACET, TIMESERIES, and SESSION ")]
+        [DataRow("SELECT DriveSpin FROM shipslog FACET DriveStage", "FACET, TIMESERIES, and SESSION ")]
+        [DataRow("SELECT DriveSpin FROM shipslog SESSION 1 second", "FACET, TIMESERIES, and SESSION ")]
         [DataRow("SELECT percentile(DriveSpin) FROM shipslog", "percentile takes ")]
         [DataRow("SELECT percentile(DriveSpin, 101) FROM shipslog", "101 isn't a percentile")]
         [DataRow("SELECT percentile(DriveSpin, 5, 95) - min(DriveSpin) FROM shipslog", "percentile takes ")]
         [DataRow("SELECT rate(DriveSpin, 1 second) FROM shipslog", "rate takes ")]
         [DataRow("SELECT rate(count(*), 0 seconds) FROM shipslog", "rate needs ")]
+        [DataRow("SELECT derivative(DriveSpin) FROM shipslog", "derivative takes ")]
+        [DataRow("SELECT derivative(, 1 second) FROM shipslog", "derivative takes ")]
+        [DataRow("SELECT derivative(DriveSpin, 0 seconds) FROM shipslog", "derivative needs ")]
+        [DataRow("SELECT derivative(DriveSpin, 1 second ago) FROM shipslog", "derivative needs ")]
+        [DataRow("SELECT derivative(DriveSpin, -1 second) FROM shipslog", "derivative -1 second isn't a duration")]
         [DataRow("SELECT average() FROM shipslog", "average takes ")]
         [DataRow("SELECT count(*) FROM shipslog COMPARE WITH 1 second ago", "COMPARE WITH ")]
         [DataRow("SELECT count(*) FROM shipslog SINCE 1 COMPARE 1 second", "COMPARE WITH ")]
@@ -590,6 +706,127 @@ namespace SqlLinq.TimeSeries.UnitTests
 
             // Assert
             Assert.AreEqual(1.0, rate);
+        }
+
+        [TestMethod]
+        public void DerivativeOfALinearRamp()
+        {
+            // Arrange
+            var query = new TimeSeriesQuery<Sample>("SELECT derivative(DriveSpin, 1 second) AS PerSecond, derivative(DriveSpin, 1 minute) AS PerMinute FROM shipslog", s => TimeSpan.FromSeconds(s.Time));
+            var ramp = Enumerable.Range(0, 5).Select(i => new Sample { Id = i, Time = i * 0.5, DriveSpin = 1000 + i * 250 }).ToList();
+
+            // Act
+            var row = query.Evaluate(ramp).Single();
+
+            // Assert
+            Assert.AreEqual(500.0, row["PerSecond"]);
+            Assert.AreEqual(30000.0, row["PerMinute"]);
+        }
+
+        [TestMethod]
+        [DataRow("500 ms", -250.0)]
+        [DataRow("1", -500.0)]
+        [DataRow("2 seconds", -1000.0)]
+        [DataRow("1 h", -1800000.0)]
+        public void DerivativeScalesToTheDuration(string duration, double expected)
+        {
+            // Arrange
+            var query = new TimeSeriesQuery<Sample>("SELECT derivative(DriveSpin, " + duration + ") AS D FROM shipslog", s => TimeSpan.FromSeconds(s.Time));
+            var ramp = Enumerable.Range(0, 5).Select(i => new Sample { Id = i, Time = 10 + i * 0.5, DriveSpin = 7000 - i * 250 }).ToList();
+
+            // Act
+            var row = query.Evaluate(ramp).Single();
+
+            // Assert
+            Assert.AreEqual(expected, row["D"]);
+        }
+
+        [TestMethod]
+        public void DerivativePerBucket()
+        {
+            // Act
+            var rows = Run("SELECT derivative(DriveSpin, 1 second) AS D FROM shipslog TIMESERIES 1 second");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { 3300.0, 2800.0, -9600.0, -9500.0 }, Column(rows, "D"));
+        }
+
+        [TestMethod]
+        public void DerivativePerSession()
+        {
+            // Act
+            var rows = Run("SELECT derivative(DriveSpin, 1 second) AS D, derivative(abs(DriveSpin - 7000), 1 second) AS Off FROM shipslog WHERE PlasmaPressure > 90 SESSION 500 ms");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { 3400.0, null }, Column(rows, "D"));
+            CollectionAssert.AreEqual(new object[] { 200.0, null }, Column(rows, "Off"));
+        }
+
+        [TestMethod]
+        public void DerivativeSkipsNullValues()
+        {
+            // Arrange
+            var query = new TimeSeriesQuery<Sample>("SELECT derivative(FuelMix, 1 second) AS D FROM shipslog", s => TimeSpan.FromSeconds(s.Time));
+            var samples = new[]
+            {
+                new Sample { Time = 0, FuelMix = 10 },
+                new Sample { Time = 1, FuelMix = null },
+                new Sample { Time = 2, FuelMix = 12 },
+                new Sample { Time = 3, FuelMix = 13 },
+            };
+
+            // Act
+            var row = query.Evaluate(samples).Single();
+
+            // Assert
+            Assert.AreEqual(1.0, row["D"]);
+        }
+
+        [TestMethod]
+        public void DerivativeOfFewerThanTwoTimesIsNull()
+        {
+            // Arrange
+            var query = new TimeSeriesQuery<Sample>("SELECT derivative(FuelMix, 1 second) AS D FROM shipslog", s => TimeSpan.FromSeconds(s.Time));
+            var oneValue = new[] { new Sample { Time = 0, FuelMix = 10 }, new Sample { Time = 1, FuelMix = null } };
+            var oneTime = new[] { new Sample { Time = 1, FuelMix = 10 }, new Sample { Time = 1, FuelMix = 12 } };
+
+            // Act
+            var oneValueRow = query.Evaluate(oneValue).Single();
+            var oneTimeRow = query.Evaluate(oneTime).Single();
+
+            // Assert
+            Assert.IsNull(oneValueRow["D"]);
+            Assert.IsNull(oneTimeRow["D"]);
+        }
+
+        [TestMethod]
+        public void DerivativeOfTextThrowsSqlException()
+        {
+            // Act & Assert
+            var e = Assert.ThrowsExactly<SqlException>(() => Run("SELECT derivative(Note, 1 second) FROM shipslog"));
+            Assert.AreEqual("Arithmetic requires numeric operands; received String.", e.Message);
+        }
+
+        [TestMethod]
+        public void DerivativePerFacet()
+        {
+            // Act
+            var rows = Run("SELECT derivative(DriveSpin, 1 second) AS D FROM shipslog FACET DriveStage");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { 2, 0, 3, 1, 4 }, Column(rows, "DriveStage"));
+            CollectionAssert.AreEqual(new object[] { 2800.0, 0.0, -9600.0, null, null }, Column(rows, "D"));
+        }
+
+        [TestMethod]
+        public void CompareWithDerivative()
+        {
+            // Act
+            var rows = Run("SELECT derivative(DriveSpin, 1 second) AS D FROM shipslog SINCE 2 UNTIL 3 COMPARE WITH 2 seconds ago");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { "current", "previous" }, Column(rows, "Comparison"));
+            CollectionAssert.AreEqual(new object[] { -9600.0, 3300.0 }, Column(rows, "D"));
         }
 
         [TestMethod]

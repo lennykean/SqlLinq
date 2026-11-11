@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using LinqStatistics;
 
 namespace SqlLinq.TimeSeries
 {
@@ -8,7 +9,20 @@ namespace SqlLinq.TimeSeries
     {
         public static readonly HashSet<string> Names = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "count", "sum", "average", "avg", "min", "max", "stddev", "uniqueCount", "percentile", "median", "latest", "earliest", "rate"
+            "count",
+            "sum",
+            "average",
+            "avg",
+            "min",
+            "max",
+            "stddev",
+            "uniqueCount",
+            "percentile",
+            "median",
+            "latest",
+            "earliest",
+            "rate",
+            "derivative"
         };
 
         private readonly Func<string, Func<T, object>> _compile;
@@ -59,6 +73,8 @@ namespace SqlLinq.TimeSeries
                     return ByTime(name, args, (time, best) => time < best);
                 case "rate":
                     return Rate(args);
+                case "derivative":
+                    return Derivative(args);
             }
             throw new SqlException(name + " isn't an aggregate function.");
         }
@@ -122,6 +138,42 @@ namespace SqlLinq.TimeSeries
                 var value = inner(rows, window);
 
                 return value == null || window <= TimeSpan.Zero ? null : (object)(Values.ToDouble(value) * per / window.Ticks);
+            };
+        }
+
+        private Aggregate<T> Derivative(List<string> args)
+        {
+            if (args.Count != 2 || args[0].Length == 0)
+            {
+                throw new SqlException("derivative takes (value, duration), e.g. derivative(RPM, 1 second).");
+            }
+
+            var per = Bound.Parse(args[1], "derivative");
+            if (per.Ago || per.Offset <= TimeSpan.Zero)
+            {
+                throw new SqlException("derivative needs a positive duration, e.g. derivative(RPM, 1 second).");
+            }
+
+            var value = _compile(args[0]);
+            var seconds = per.Offset.TotalSeconds;
+
+            return (rows, window) =>
+            {
+                var points = rows.Select(r => (r.Time, Value: value(r.Item))).Where(p => p.Value != null).ToList();
+                var nonNumeric = points.Select(p => p.Value).FirstOrDefault(v => !Values.IsNumeric(v));
+                if (nonNumeric != null)
+                {
+                    throw new SqlException("Arithmetic requires numeric operands; received " + nonNumeric.GetType().Name + ".");
+                }
+
+                if (points.Count < 2 || points.All(p => p.Time == points[0].Time))
+                {
+                    return null;
+                }
+
+                var fit = points.Select(p => Tuple.Create((p.Time - points[0].Time).TotalSeconds, Values.ToDouble(p.Value))).LeastSquares();
+
+                return fit.M * seconds;
             };
         }
     }

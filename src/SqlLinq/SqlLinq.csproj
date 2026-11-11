@@ -6,7 +6,7 @@
     <Title>SqlLinq</Title>
     <Authors>dkackman, lennykean</Authors>
     <Description>A dynamic Sql query library that supports plain text queries in Linq-to-Objects scenarios. Sql syntax is the majority of ANSI Sql 89 SELECT syntax.</Description>
-    <Copyright>Copyright Don Kackman 2026</Copyright>
+    <Copyright>Copyright Don Kackman, Lenny Kean 2026</Copyright>
     <PackageTags>Linq;Dynamic;Sql;Query</PackageTags>
     <PackageLicenseFile>License.md</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>

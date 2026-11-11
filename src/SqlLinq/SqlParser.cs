@@ -22,14 +22,19 @@ namespace SqlLinq
 
         private Parser m_parser;
 
-        public SqlParser()
+        public SqlParser() : this(null)
         {
-            _functions = new Dictionary<string, ISqlFunction>(StringComparer.OrdinalIgnoreCase);
         }
 
         internal SqlParser(IEnumerable<ISqlFunction> functions)
         {
-            _functions = (functions ?? Enumerable.Empty<ISqlFunction>()).ToDictionary(f => f.Name, StringComparer.OrdinalIgnoreCase);
+            _functions = (functions ?? Enumerable.Empty<ISqlFunction>())
+                .ToDictionary(f => f.Name, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var function in MathFunction.All)
+            {
+                _functions.TryAdd(function.Name, function);
+            }
         }
 
         public string ErrorString { get; private set; }
@@ -64,7 +69,7 @@ namespace SqlLinq
         {
             Debug.Assert(string.IsNullOrEmpty(source) == false);
 
-            var calls = _functions.Count == 0 ? new List<FunctionCall>() : SqlSyntax.FindCalls(source, _functions.Keys);
+            var calls = SqlSyntax.FindCalls(source, _functions.Keys);
             var text = SqlSyntax.ReplaceCalls(source, calls, i => "[" + Placeholder + i.ToString(CultureInfo.InvariantCulture) + "]");
 
             using (TextReader reader = new StringReader(text))
