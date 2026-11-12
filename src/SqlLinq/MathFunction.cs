@@ -59,7 +59,7 @@ namespace SqlLinq
         {
             if (arguments.Count < _min || arguments.Count > _max)
             {
-                throw new SqlException(Name + " takes " + _takes + ".");
+                throw new SqlException(Name + " takes " + _takes + ".", SqlErrorKind.Semantic);
             }
 
             var values = Expression.NewArrayInit(typeof(object), arguments.Select(a => Expression.Convert(a.Expression, typeof(object))));

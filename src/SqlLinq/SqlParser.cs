@@ -60,6 +60,8 @@ namespace SqlLinq
 
         internal int ErrorLength { get; private set; }
 
+        internal SqlErrorKind ErrorKind { get; private set; }
+
         internal SqlException ArgumentError { get; private set; }
 
         internal IEnumerable<NonTerminalNode> Fragments => _reductions.Where(n => n.Parent == null);
@@ -103,7 +105,7 @@ namespace SqlLinq
             }
             catch (SqlException e) when (_offset != 0)
             {
-                throw new SqlException(e.Message, e.InnerException, e.Start + _offset, e.Length);
+                throw new SqlException(e.Message, e.InnerException, e.Kind, e.Start + _offset, e.Length);
             }
 
             var text = SqlSyntax.ReplaceCalls(source, calls, PlaceholderFor);
@@ -122,7 +124,7 @@ namespace SqlLinq
                     Place(calls);
                     var failed = _reductions[_reductions.Count - 1];
 
-                    throw new SqlException(e.Message, e.InnerException, failed.Start, failed.Length);
+                    throw new SqlException(e.Message, e.InnerException, e.Kind, failed.Start, failed.Length);
                 }
 
                 Place(calls);
@@ -234,7 +236,7 @@ namespace SqlLinq
                 {
                     error = parser.ParseExpression(text)
                         ? parser.ArgumentError
-                        : new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin argument\n\t{1}\nof {2}()", parser.ErrorString, text.Trim(), call.Name), parser.ErrorStart, parser.ErrorLength);
+                        : new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin argument\n\t{1}\nof {2}()", parser.ErrorString, text.Trim(), call.Name), parser.ErrorKind, parser.ErrorStart, parser.ErrorLength);
                 }
                 catch (SqlException e) when (_lenient)
                 {
@@ -273,10 +275,11 @@ namespace SqlLinq
 
             while (true)
             {
-                switch (ParseNext())
+                switch (m_parser.Parse())
                 {
                     case ParseMessage.LexicalError:
                         ErrorString = string.Format(CultureInfo.CurrentCulture, "Lexical Error. Line {0}. Token {1} was not expected.", m_parser.LineNumber, m_parser.TokenText);
+                        ErrorKind = m_parser.TokenText.StartsWith('\'') ? SqlErrorKind.UnterminatedString : SqlErrorKind.Lexical;
                         ErrorStart = m_parser.TokenCharPosition;
                         ErrorLength = m_parser.TokenLength;
                         return false;
@@ -286,9 +289,11 @@ namespace SqlLinq
                         foreach (Symbol tokenSymbol in m_parser.GetExpectedTokens())
                             text.AppendFormat(CultureInfo.CurrentCulture, " {0}", tokenSymbol);
 
+                        var call = m_parser.TokenText == "(" && _terminals.Count > 1 && _terminals[^2].Symbol.Name == "Id" ? _terminals[^2] : null;
                         ErrorString = string.Format(CultureInfo.CurrentCulture, "Syntax Error. Line {0}. Expecting: {1}.", m_parser.LineNumber, text);
-                        ErrorStart = m_parser.TokenCharPosition;
-                        ErrorLength = m_parser.TokenLength;
+                        ErrorKind = call == null ? SqlErrorKind.Syntax : SqlErrorKind.UnknownName;
+                        ErrorStart = call?.Start ?? m_parser.TokenCharPosition;
+                        ErrorLength = call?.Length ?? m_parser.TokenLength;
 
                         return false;
 
@@ -327,6 +332,7 @@ namespace SqlLinq
 
                     case ParseMessage.CommentError:
                         ErrorString = "Comment Error. Unexpected end of input.";
+                        ErrorKind = SqlErrorKind.UnterminatedComment;
                         ErrorStart = m_parser.TokenCharPosition;
                         ErrorLength = m_parser.TokenLength;
                         return false;
@@ -336,18 +342,6 @@ namespace SqlLinq
                         // don't do anything 
                         break;
                 }
-            }
-        }
-
-        private ParseMessage ParseNext()
-        {
-            try
-            {
-                return m_parser.Parse();
-            }
-            catch (Exception e) when (e.Message == "CommentError")
-            {
-                return ParseMessage.CommentError;
             }
         }
     }

@@ -73,7 +73,7 @@ namespace SqlLinq.SyntaxTree.Clauses
 
             if (column is AggregateNode)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} refers to an aggregate, which needs GROUP BY or an aggregate-only select list.", Id.LookupId));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} refers to an aggregate, which needs GROUP BY or an aggregate-only select list.", Id.LookupId), SqlErrorKind.Semantic);
             }
 
             var item = Expression.Parameter(tSource, "item");

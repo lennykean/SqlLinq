@@ -190,7 +190,7 @@ namespace SqlLinq.SyntaxTree.Joins
 
             if (!source.Type.HasPropertyOrField(field))
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a field of {1}.", field, source.Type.Name));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a field of {1}.", field, source.Type.Name), SqlErrorKind.UnknownName);
             }
 
             var value = ExpressionFactory.CreateFieldSelector(item, field);
@@ -239,13 +239,13 @@ namespace SqlLinq.SyntaxTree.Joins
 
             throw new SqlException(dotted
                 ? string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query.", id.Qualifier, id.LookupId)
-                : string.Format(CultureInfo.CurrentCulture, "{0} isn't a field of any source of this query.", id.LookupId));
+                : string.Format(CultureInfo.CurrentCulture, "{0} isn't a field of any source of this query.", id.LookupId), SqlErrorKind.UnknownName);
         }
 
         private static UnaryExpression Missing(Identifier id)
         {
             var error = id.Qualifier.Length > 0
-                ? Expression.New(typeof(SqlException).GetConstructor(new[] { typeof(string) }), Expression.Constant(string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query, or a field of the row.", id.Qualifier, id.LookupId)))
+                ? Expression.New(typeof(SqlException).GetConstructor(new[] { typeof(string), typeof(SqlErrorKind) }), Expression.Constant(string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query, or a field of the row.", id.Qualifier, id.LookupId)), Expression.Constant(SqlErrorKind.UnknownName))
                 : Expression.New(typeof(KeyNotFoundException).GetConstructor(new[] { typeof(string) }), Expression.Constant(string.Format(CultureInfo.CurrentCulture, "The given key '{0}' was not present in the dictionary.", id.LookupId)));
 
             return Expression.Throw(error, typeof(object));
@@ -342,7 +342,7 @@ namespace SqlLinq.SyntaxTree.Joins
                 return field.GetValue(item);
             }
 
-            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a field of {1}.", name, item.GetType().Name));
+            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a field of {1}.", name, item.GetType().Name), SqlErrorKind.UnknownName);
         }
 
         private static Dictionary<string, object> Flatten(object[] items, JoinLayout layout)

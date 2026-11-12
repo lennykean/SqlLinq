@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
 
@@ -13,7 +14,8 @@ namespace SqlLinq.TimeSeries
         {
             var tree = new TimeSeriesQueryTree<T>(syntax);
             Syntax = syntax;
-            Columns = tree.Columns;
+            ColumnDescriptions = tree.Columns;
+            Columns = ColumnDescriptions.Select(c => c.Name).ToList();
             Expression = tree.Tree;
             _run = Expression.Compile();
         }
@@ -21,6 +23,8 @@ namespace SqlLinq.TimeSeries
         public TimeSeriesSyntaxTree Syntax { get; }
 
         public IReadOnlyList<string> Columns { get; }
+
+        public IReadOnlyList<TimeSeriesColumn> ColumnDescriptions { get; }
 
         public Expression<Func<IEnumerable<T>, Func<T, TimeSpan>, CancellationToken, IList<IDictionary<string, object>>>> Expression { get; }
 

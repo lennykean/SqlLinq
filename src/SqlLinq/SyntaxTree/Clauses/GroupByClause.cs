@@ -20,7 +20,7 @@ namespace SqlLinq.SyntaxTree.Clauses
         internal override void CheckSyntax()
         {
             if (GroupByItems.Count() > 8)
-                throw new SqlException("Only 8 fields or less are currently supported for grouping");
+                throw new SqlException("Only 8 fields or less are currently supported for grouping", SqlErrorKind.Semantic);
 
             base.CheckSyntax();
         }
@@ -86,7 +86,7 @@ namespace SqlLinq.SyntaxTree.Clauses
                     message += string.Format(CultureInfo.CurrentCulture, " {0} in {1} isn't a source or alias of this query.", unknown.Id.Qualifier, unknown.Id.LookupId);
                 }
 
-                throw new SqlException(message);
+                throw new SqlException(message, SqlErrorKind.Semantic);
             }
         }
 

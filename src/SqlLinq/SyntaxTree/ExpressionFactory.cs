@@ -46,7 +46,7 @@ namespace SqlLinq
             var create = types.All(t => t != null) ? tResult.GetConstructor(types) : null;
             if (create == null)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} has no constructor that takes the {1} columns of the select list.", tResult.Name, names.Count));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} has no constructor that takes the {1} columns of the select list.", tResult.Name, names.Count), SqlErrorKind.Semantic);
             }
 
             return Expression.New(create, values.Select((value, i) => Converted(value, types[i])));
@@ -89,7 +89,10 @@ namespace SqlLinq
             var member = item.Type.GetPropertyOrField(propertyName);
             if (member == null)
             {
-                throw new ArgumentException(string.Format(CultureInfo.CurrentCulture, "'{0}' is not a member of type '{1}'", propertyName, item.Type), nameof(propertyName));
+                var unknown = new ArgumentException(string.Format(CultureInfo.CurrentCulture, "'{0}' is not a member of type '{1}'", propertyName, item.Type), nameof(propertyName));
+                unknown.Data[nameof(SqlErrorKind)] = SqlErrorKind.UnknownName;
+
+                throw unknown;
             }
 
             return Expression.MakeMemberAccess(item, member);

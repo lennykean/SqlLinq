@@ -31,7 +31,7 @@ namespace SqlLinq
 
             if (syntax.Root is UnionNode)
             {
-                throw new SqlException("A compiled query can't run a UNION; use the Query extension methods instead.");
+                throw new SqlException("A compiled query can't run a UNION; use the Query extension methods instead.", SqlErrorKind.Semantic);
             }
 
             Syntax = syntax;

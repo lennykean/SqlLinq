@@ -66,7 +66,7 @@ namespace SqlLinq.SyntaxTree.Expressions
         {
             if (select.Columns is ColumnsStar || select.Columns.ColumnSources.Count() != 1)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The subquery of {0} must select exactly one column.", keyword));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The subquery of {0} must select exactly one column.", keyword), SqlErrorKind.Semantic);
             }
         }
 
@@ -131,7 +131,7 @@ namespace SqlLinq.SyntaxTree.Expressions
             var rows = results.Take(2).ToList();
             if (rows.Count > 1)
             {
-                throw new SqlException("The subquery returned more than one row.");
+                throw new SqlException("The subquery returned more than one row.", SqlErrorKind.Evaluation);
             }
 
             return rows.Count == 0 ? null : rows[0].Values.First();

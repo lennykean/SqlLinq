@@ -39,7 +39,7 @@ namespace SqlLinq.SyntaxTree.Clauses
         {
             // filter out any aggregates expressions in a where clause that are not part of a sub-query
             if (FindDescendants<AggregateNode>().Any(a => !a.AncestorsBelow(this).OfType<SelectNode>().Any()))
-                throw new SqlException("Aggregate expressions are not valid in a WHERE clause.\nTry GROUP BY and HAVING instead.");
+                throw new SqlException("Aggregate expressions are not valid in a WHERE clause.\nTry GROUP BY and HAVING instead.", SqlErrorKind.Semantic);
         }
     }
 }

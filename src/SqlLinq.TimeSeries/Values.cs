@@ -46,7 +46,7 @@ namespace SqlLinq.TimeSeries
         {
             if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var p) || p < 0 || p > 100)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a percentile between 0 and 100.", text));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a percentile between 0 and 100.", text), SqlErrorKind.Semantic);
             }
 
             return p;
@@ -57,7 +57,7 @@ namespace SqlLinq.TimeSeries
             var nonNumeric = points.Select(p => p.Value).FirstOrDefault(v => !IsNumeric(v));
             if (nonNumeric != null)
             {
-                throw new SqlException("Arithmetic requires numeric operands; received " + nonNumeric.GetType().Name + ".");
+                throw new SqlException("Arithmetic requires numeric operands; received " + nonNumeric.GetType().Name + ".", SqlErrorKind.Evaluation);
             }
 
             if (points.Count < 2 || points.All(p => p.Time == points[0].Time))

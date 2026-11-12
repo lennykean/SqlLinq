@@ -83,12 +83,12 @@ namespace SqlLinq
         public static MemberInfo GetPropertyOrField(this Type type, string name)
         {
             MemberInfo member = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-            return (member ?? type.GetField(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase));
+            return (member ?? type.GetField(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)) ?? type.GetInterfaces().Select(i => i.GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)).FirstOrDefault(p => p != null);
         }
 
         public static Type GetPropertyOrFieldType(this Type type, string name)
         {
-            PropertyInfo p = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            PropertyInfo p = type.GetPropertyOrField(name) as PropertyInfo;
             if (p != null)
                 return p.PropertyType;
 

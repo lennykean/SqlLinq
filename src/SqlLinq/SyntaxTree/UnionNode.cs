@@ -28,12 +28,12 @@ namespace SqlLinq.SyntaxTree
             var parts = Parts;
             if (parts.Take(parts.Count - 1).Any(p => p.Select.OrderByClause != null))
             {
-                throw new SqlException("Only the last part of a UNION can have an ORDER BY; it orders the whole UNION.");
+                throw new SqlException("Only the last part of a UNION can have an ORDER BY; it orders the whole UNION.", SqlErrorKind.Semantic);
             }
 
             if (parts.Select(p => p.Select.Columns is ColumnsStar ? -1 : p.Select.Columns.ColumnSources.Count()).Distinct().Count() > 1)
             {
-                throw new SqlException("Each part of a UNION must select the same number of columns.");
+                throw new SqlException("Each part of a UNION must select the same number of columns.", SqlErrorKind.Semantic);
             }
         }
 
@@ -69,7 +69,7 @@ namespace SqlLinq.SyntaxTree
             var byName = typeof(TResult).IsDictionary() || names.Count > 1 && !typeof(TResult).IsTuple();
             if (byName && parts.Any(p => !p.Select.Columns.ColumnSources.Select(c => c.ColumnAlias).SequenceEqual(names, StringComparer.OrdinalIgnoreCase)))
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "Each part of a UNION must name its columns like the first part ({0}); use AS to rename them.", string.Join(", ", names)));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "Each part of a UNION must name its columns like the first part ({0}); use AS to rename them.", string.Join(", ", names)), SqlErrorKind.Semantic);
             }
 
             return names;
@@ -99,7 +99,7 @@ namespace SqlLinq.SyntaxTree
             {
                 if (item is OrderByPositionItem unordered)
                 {
-                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} needs a select list; SELECT * over dictionary or dynamic rows has no fixed column order.", unordered.Position));
+                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} needs a select list; SELECT * over dictionary or dynamic rows has no fixed column order.", unordered.Position), SqlErrorKind.Semantic);
                 }
 
                 return row => ResultOrder.Column(row, item.Id.LocalId, -1, false);
@@ -110,7 +110,7 @@ namespace SqlLinq.SyntaxTree
                 : names.FindIndex(n => string.Equals(n, item.Id.LocalId, StringComparison.OrdinalIgnoreCase));
             if (index < 0)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} isn't a column of the UNION.", item.Id.LookupId));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} isn't a column of the UNION.", item.Id.LookupId), SqlErrorKind.UnknownName);
             }
 
             return row => ResultOrder.Column(row, names[index], index, single);

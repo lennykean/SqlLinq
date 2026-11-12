@@ -673,7 +673,10 @@ namespace GoldParser
 						break;
 					
 					case SymbolType.CommentStart:
-						ProcessBlockComment();
+						if (!ProcessBlockComment())
+						{
+							return ParseMessage.CommentError;
+						}
 						break;
 				}
 			}
@@ -743,7 +746,7 @@ namespace GoldParser
 			}
 		}
 
-		private void ProcessBlockComment()
+		private bool ProcessBlockComment()
 		{
 			if (m_commentLevel > 0)
 			{
@@ -771,13 +774,12 @@ namespace GoldParser
 							if (m_commentLevel == 0)
 							{
 								// Done with comment.
-								return;
+								return true;
 							}
 							break;
 
 						case SymbolType.End:
-							//TODO: replace with special exception.
-							throw new Exception("CommentError");
+							return false;
 
 						default:
 							//Do nothing, ignore
@@ -786,6 +788,8 @@ namespace GoldParser
 					}
 				}
 			}
+
+			return true;
 		}
 
 		/// <summary>
@@ -810,7 +814,10 @@ namespace GoldParser
 
 						case SymbolType.CommentStart:
 							m_commentText = new StringBuilder();
-							ProcessBlockComment(); 
+							if (!ProcessBlockComment())
+							{
+								throw new Exception("CommentError");
+							}
 							string blockComment = m_commentText.ToString();
 							m_commentText = null;
 							return blockComment;

@@ -30,7 +30,7 @@ namespace SqlLinq
             }
             catch (Exception e) when (!(e is SqlException))
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL compile error:\n\t{0}\nin expression\n\t{1}", e.Message, expression), e);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL compile error:\n\t{0}\nin expression\n\t{1}", e.Message, expression), e, Kind(e));
             }
         }
 
@@ -57,7 +57,7 @@ namespace SqlLinq
             }
             catch (Exception e) when (!(e is SqlException))
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL compile error:\n\t{0}\nin expression\n\t{1}", e.Message, expression.Source ?? expression.ToSql()), e, expression.Start, expression.Length);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL compile error:\n\t{0}\nin expression\n\t{1}", e.Message, expression.Source ?? expression.ToSql()), e, Kind(e), expression.Start, expression.Length);
             }
         }
 
@@ -78,6 +78,11 @@ namespace SqlLinq
             var body = Expression.Convert(node.CreateExpression(source, item), typeof(object));
 
             return Expression.Lambda<Func<T, object>>(ParameterReplacer.Replace(body, source, Expression.Constant(Enumerable.Empty<T>(), source.Type)), item);
+        }
+
+        private static SqlErrorKind Kind(Exception e)
+        {
+            return e.Data[nameof(SqlErrorKind)] is SqlErrorKind kind ? kind : SqlErrorKind.Semantic;
         }
     }
 }

@@ -126,7 +126,7 @@ namespace SqlLinq
 
                 if (close < 0)
                 {
-                    throw new SqlException("Unbalanced parentheses in " + text, match.Index, text.Length - match.Index);
+                    throw new SqlException("Unbalanced parentheses in " + text, SqlErrorKind.UnbalancedParentheses, match.Index, text.Length - match.Index);
                 }
                 calls.Add(new FunctionCall(match.Index, close, match.Groups[1].Value, text.Substring(open + 1, close - open - 1)));
 
@@ -178,7 +178,7 @@ namespace SqlLinq
         {
             if (text.Length < 2 || text[0] != '\'' || text[text.Length - 1] != '\'')
             {
-                throw new SqlException("Expected a quoted string but found " + text);
+                throw new SqlException("Expected a quoted string but found " + text, SqlErrorKind.Syntax);
             }
 
             return text[1..^1];

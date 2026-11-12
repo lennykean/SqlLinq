@@ -1,4 +1,6 @@
-﻿using System.Linq;
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Linq.Expressions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using SqlLinq.SyntaxTree;
@@ -35,6 +37,8 @@ namespace SqlLinq.UnitTests
         [DataRow("SELECT Name, FROM this", "FROM")]
         [DataRow("SELECT * FROM this WHERE Age 18", "18")]
         [DataRow("SELECT Name FROM this WHERE twice(Rank > 6", "twice(Rank > 6")]
+        [DataRow("SELECT Name FROM this WHERE nofunc(Rank) > 6", "nofunc")]
+        [DataRow("SELECT Name FROM this WHERE twice(nofunc(Rank)) > 6", "nofunc")]
         public void ParseErrorsCarryTheirPosition(string sql, string text)
         {
             // Act
@@ -159,6 +163,156 @@ namespace SqlLinq.UnitTests
             Assert.AreSame(argument.Error, syntax.Error);
             Assert.AreEqual(6, argument.Start);
             Assert.AreEqual(8, argument.Length);
+        }
+
+        [TestMethod]
+        public void BindGivesEachCallTheFunctionOfItsName()
+        {
+            // Arrange
+            var standIn = new ISqlFunction[] { new TestFunction("TWICE", arguments => throw new SqlException("not bound")) };
+            var syntax = SqlSyntaxTree.Parse("SELECT twice(Rank) AS R, Name FROM this WHERE twice(Age + twice(Rank)) > abs(Rank)", standIn);
+            var crew = new[] { new CrewMember { Name = "Ed", Rank = 6, Age = 40 }, new CrewMember { Name = "Kelly", Rank = 5, Age = -30 } };
+
+            // Act
+            var bound = syntax.Bind(Functions);
+            var rows = bound.Compile<CrewMember, IDictionary<string, object>>().Execute(crew).ToList();
+
+            // Assert
+            Assert.AreEqual("Ed/12", string.Join(", ", rows.Select(r => r["Name"] + "/" + r["R"])));
+            Assert.IsTrue(Calls(bound.Root).Where(f => f.Name == "twice").All(f => f == Functions[0]));
+            Assert.AreEqual(3, Calls(bound.Root).Count(f => f == Functions[0]));
+            Assert.IsTrue(Calls(syntax.Root).All(f => f != Functions[0]));
+            Assert.AreEqual(syntax.Root.ToSql(), bound.Root.ToSql());
+            Assert.AreEqual(syntax.Text, bound.Text);
+            CollectionAssert.AreEqual(syntax.Names.ToList(), bound.Names.ToList());
+            Assert.ThrowsExactly<SqlException>(() => syntax.Compile<CrewMember, IDictionary<string, object>>().Execute(crew).ToList());
+        }
+
+        [TestMethod]
+        public void BindKeepsCallsItHasNoFunctionFor()
+        {
+            // Arrange
+            var expression = SqlSyntaxTree.ParseExpression("twice(Rank) + abs(Age)", Functions).Root;
+            var abs = expression.FindDescendants<NodeWithId>().Single(n => n.FunctionName == "abs").Function;
+
+            // Act
+            var bound = expression.Bind(Array.Empty<ISqlFunction>());
+
+            // Assert
+            Assert.AreNotSame(expression, bound);
+            Assert.AreEqual(expression.ToSql(), bound.ToSql());
+            CollectionAssert.AreEqual(new[] { Functions[0], abs }, Calls(bound).ToList());
+            Assert.ThrowsExactly<InvalidOperationException>(() => SqlSyntaxTree.Parse("SELECT FROM").Bind(Functions));
+            Assert.ThrowsExactly<ArgumentNullException>(() => expression.Bind(null));
+        }
+
+        [TestMethod]
+        public void BindOfTwoFunctionsWithOneNameThrowsAsParseDoes()
+        {
+            // Arrange
+            var twice = Functions.Concat(Functions).ToArray();
+            var syntax = SqlSyntaxTree.Parse("SELECT twice(Rank) FROM this", Functions);
+
+            // Act & Assert
+            Assert.ThrowsExactly<ArgumentException>(() => SqlSyntaxTree.Parse("SELECT twice(Rank) FROM this", twice));
+            Assert.ThrowsExactly<ArgumentException>(() => syntax.Root.Bind(twice));
+            Assert.ThrowsExactly<ArgumentException>(() => syntax.Bind(twice));
+        }
+
+        [TestMethod]
+        [DataRow("Rank > twice(Pay + 1) AND Name = 'Ed'", 0)]
+        [DataRow("Rank > twice(Pay + 1) AND Name = 'Ed'", 9)]
+        [DataRow("Rank > twice(Pay + 1) AND\n Name = 'Ed'", 4)]
+        [DataRow("Rank > twice(Pay +", 3)]
+        [DataRow("Rank > twice(Pay >) = 2", 5)]
+        public void ShiftIsTheTreeOfTheTextItIsShiftedInto(string expression, int offset)
+        {
+            // Arrange
+            var text = "WHERE" + new string(' ', offset) + "\n" + expression;
+            var syntax = SqlSyntaxTree.ParseExpression(expression, Functions);
+            var parsed = SqlSyntaxTree.ParseExpression(text, text.Length - expression.Length, expression.Length, Functions);
+
+            // Act
+            var shifted = syntax.Shift(text, text.Length - expression.Length);
+
+            // Assert
+            Assert.AreEqual(Positions(parsed), Positions(shifted));
+            Assert.AreEqual(text, shifted.Text);
+            Assert.AreEqual(expression, syntax.Text);
+            Assert.AreEqual(Positions(SqlSyntaxTree.ParseExpression(expression, Functions)), Positions(syntax));
+            Assert.ThrowsExactly<ArgumentNullException>(() => syntax.Shift(null, 0));
+        }
+
+        private static string Positions(SqlSyntaxTree syntax)
+        {
+            return string.Join(
+                " | ",
+                string.Join(", ", Nodes(syntax.Root).OfType<TerminalNode>().Select(t => t.Text + "@" + t.Start + "/" + t.Length + "/" + t.LineNumber + ":" + t.LinePosition)),
+                string.Join(", ", Nodes(syntax.Root).OfType<ArgumentNode>().Select(a => a.Text + "@" + a.Start + "/" + a.Length + "/" + a.Error?.Start)),
+                string.Join(", ", syntax.Names.Select(n => n.LookupId + "@" + n.Start + "/" + n.Length)),
+                syntax.Root?.ToSql(),
+                syntax.Error?.Message + "@" + syntax.Error?.Start + "/" + syntax.Error?.Length + "/" + syntax.Error?.Kind);
+        }
+
+        private static IEnumerable<SyntaxNode> Nodes(SyntaxNode node)
+        {
+            if (node is not NonTerminalNode parent)
+            {
+                return node == null ? [] : [node];
+            }
+
+            var arguments = (parent as NodeWithId)?.Arguments ?? (parent as ColumnSource)?.Arguments ?? [];
+
+            return parent.Children.SelectMany(Nodes).Concat(arguments.SelectMany(a => Nodes(a.Expression).Prepend(a))).Prepend(parent);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT * FROM this WHERE Rank >", SqlErrorKind.Syntax)]
+        [DataRow("SELECT * FROM this /* unclosed", SqlErrorKind.UnterminatedComment)]
+        [DataRow("SELECT * FROM this WHERE Name = 'Ed", SqlErrorKind.UnterminatedString)]
+        [DataRow("SELECT * FROM this WHERE Rank ~ 1", SqlErrorKind.Lexical)]
+        [DataRow("SELECT Name FROM this WHERE twice(Rank > 6", SqlErrorKind.UnbalancedParentheses)]
+        [DataRow("SELECT Name FROM this WHERE twice(Rank >) = 2", SqlErrorKind.Syntax)]
+        [DataRow("SELECT Name FROM this WHERE nofunc(Rank) > 6", SqlErrorKind.UnknownName)]
+        [DataRow("SELECT Name FROM this WHERE COUNT(*) > 1", SqlErrorKind.Semantic)]
+        public void ParseErrorsSayWhatTheyAre(string sql, SqlErrorKind kind)
+        {
+            // Act
+            var error = SqlSyntaxTree.Parse(sql, Functions).Error;
+
+            // Assert
+            Assert.AreEqual(kind, error.Kind);
+        }
+
+        [TestMethod]
+        public void CompileAndRunErrorsSayWhatTheyAre()
+        {
+            // Arrange
+            var crew = Orville.Crew();
+            var dictionaries = Orville.CrewDictionaries();
+
+            // Act
+            var member = Assert.ThrowsExactly<SqlException>(() => SqlExpression.Compile<CrewMember>("Warp + 1"));
+            var qualifier = Assert.ThrowsExactly<SqlException>(() => crew.Query<CrewMember, IDictionary<string, object>>("SELECT x.Name FROM this").ToList());
+            var grouping = Assert.ThrowsExactly<SqlException>(() => crew.Query<CrewMember, IDictionary<string, object>>("SELECT Name, COUNT(*) FROM this").ToList());
+            var arithmetic = Assert.ThrowsExactly<SqlException>(() => dictionaries.Query<IDictionary<string, object>, IDictionary<string, object>>("SELECT Name * 2 AS X FROM this").ToList());
+            var placed = new SqlException("placed", SqlErrorKind.Semantic, 3, 4);
+
+            // Assert
+            Assert.AreEqual(SqlErrorKind.UnknownName, member.Kind);
+            Assert.AreEqual(SqlErrorKind.UnknownName, qualifier.Kind);
+            Assert.AreEqual(SqlErrorKind.Semantic, grouping.Kind);
+            Assert.AreEqual(SqlErrorKind.Evaluation, arithmetic.Kind);
+            Assert.AreEqual(SqlErrorKind.Other, new SqlException("plain", 1, 2).Kind);
+            Assert.AreEqual("placed/Semantic/3/4", placed.Message + "/" + placed.Kind + "/" + placed.Start + "/" + placed.Length);
+        }
+
+        private static IEnumerable<ISqlFunction> Calls(NonTerminalNode node)
+        {
+            var calls = node.FindDescendants<NonTerminalNode>().Prepend(node).Select(n => n is NodeWithId call ? call.Function : (n as ColumnSource)?.Function);
+            var arguments = node.FindDescendants<NonTerminalNode>().Prepend(node).SelectMany(n => (n as NodeWithId)?.Arguments ?? (n as ColumnSource)?.Arguments ?? Enumerable.Empty<ArgumentNode>());
+
+            return calls.Where(f => f != null).Concat(arguments.Where(a => a.Expression != null).SelectMany(a => Calls(a.Expression)));
         }
     }
 }

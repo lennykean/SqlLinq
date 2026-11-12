@@ -161,7 +161,7 @@ namespace SqlLinq
 
             if (requireJoin && joins.Count == 0)
             {
-                throw new SqlException("The query does not contain a JOIN expression\n" + sql);
+                throw new SqlException("The query does not contain a JOIN expression\n" + sql, SqlErrorKind.Semantic);
             }
 
             if (joins.Count == 0 && (members.Count <= 1 || sources.Count == 1))
@@ -275,7 +275,7 @@ namespace SqlLinq
                 var joinedMembers = FromClause.Of(join.Children.OfType<NonTerminalNode>().First());
                 if (joinedMembers.Count != 1)
                 {
-                    throw new SqlException("JOIN takes one source. Use another JOIN for each other source.");
+                    throw new SqlException("JOIN takes one source. Use another JOIN for each other source.", SqlErrorKind.Semantic);
                 }
 
                 var joined = Add(sources, joinedMembers[0], aliases, names);
@@ -299,7 +299,7 @@ namespace SqlLinq
         {
             if (!aliases.Add(member.Alias ?? member.Name))
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} is joined more than once. Give each join its own alias.", member.Alias ?? member.Name));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} is joined more than once. Give each join its own alias.", member.Alias ?? member.Name), SqlErrorKind.Semantic);
             }
 
             var joined = Resolve(sources, member, "that", false);
@@ -327,7 +327,7 @@ namespace SqlLinq
                 return source;
             }
 
-            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' isn't one of the sources: {1}.", member.Name, string.Join(", ", sources.Keys)));
+            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' isn't one of the sources: {1}.", member.Name, string.Join(", ", sources.Keys)), SqlErrorKind.UnknownName);
         }
 
         private static HashSet<string> Names(string key, (string Name, string Alias) member)
@@ -357,7 +357,7 @@ namespace SqlLinq
                 }
             }
 
-            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "JOIN ON {0} = {1} must compare a field of the joined source with a field of an earlier source.", on[0], on[1]));
+            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "JOIN ON {0} = {1} must compare a field of the joined source with a field of an earlier source.", on[0], on[1]), SqlErrorKind.Semantic);
         }
 
         private static (string Alias, string Field) Side(string text, List<HashSet<string>> names)

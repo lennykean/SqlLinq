@@ -12,6 +12,8 @@ namespace SqlLinq.TimeSeries.UnitTests
     [TestClass]
     public class TimeSeriesTests
     {
+        private static readonly int[] Stamps = [3, 0, 3];
+
         private static List<Sample> GetSamples()
         {
             return
@@ -43,14 +45,14 @@ namespace SqlLinq.TimeSeries.UnitTests
         }
 
         [TestMethod]
-        public void UnfilteredBucketsReadEachTimestampOnceAndKeepEmptyBuckets()
+        public void StreamedBucketsReadEachTimestampOnceAndKeepEmptyBuckets()
         {
             // Arrange
             var reads = 0;
             var query = new TimeSeriesQuery<int>(
                 "SELECT count(*) AS Samples FROM shipslog TIMESERIES 1 second",
                 value => { reads++; return TimeSpan.FromSeconds(value); });
-            var source = new[] { 3, 0, 3 };
+            var source = Stamps.Select(v => v);
 
             // Act
             var result = query.Evaluate(source);
@@ -59,6 +61,52 @@ namespace SqlLinq.TimeSeries.UnitTests
             Assert.AreEqual(3, reads);
             CollectionAssert.AreEqual(new object[] { 1, 0, 0, 2 }, Column(result, "Samples"));
             CollectionAssert.AreEqual(new object[] { TimeSpan.Zero, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(3) }, Column(result, "BeginTime"));
+        }
+
+        [TestMethod]
+        public void CollectionsAreReadInPlaceOncePerPass()
+        {
+            // Arrange
+            var reads = 0;
+            using var cancellation = new CancellationTokenSource();
+            var query = new TimeSeriesQuery<int>("SELECT count(*) AS Samples FROM shipslog TIMESERIES 1 second", value => { reads++; return TimeSpan.FromSeconds(value); });
+            var cancelling = new TimeSeriesQuery<int>("SELECT count(*) FROM shipslog", value => { cancellation.Cancel(); return TimeSpan.FromSeconds(value); });
+            var changing = Stamps.ToList();
+            var changed = new TimeSeriesQuery<int>("SELECT count(*) FROM shipslog", value => { changing.Add(value); return TimeSpan.FromSeconds(value); });
+            var collection = Stamps;
+
+            // Act
+            var inPlace = query.Evaluate(collection);
+            var collectionReads = reads;
+            reads = 0;
+            var buffered = query.Evaluate(collection.Select(v => v));
+
+            // Assert
+            Assert.AreEqual(9, collectionReads);
+            Assert.AreEqual(3, reads);
+            CollectionAssert.AreEqual(new object[] { 1, 0, 0, 2 }, Column(inPlace, "Samples"));
+            CollectionAssert.AreEqual(Column(buffered, "Samples"), Column(inPlace, "Samples"));
+            Assert.ThrowsExactly<OperationCanceledException>(() => cancelling.Evaluate(collection, cancellation.Token));
+            Assert.ThrowsExactly<InvalidOperationException>(() => changed.Evaluate(changing));
+        }
+
+        [TestMethod]
+        [DataRow("SELECT count(*) FROM shipslog", 3 * 3)]
+        [DataRow("SELECT count(*), sum(DriveSpin), max(DriveSpin), min(DriveSpin), average(DriveSpin) FROM shipslog WHERE DriveSpin > 0", 3 * 3)]
+        [DataRow("SELECT count(*), sum(DriveSpin) FROM shipslog SINCE 1 COMPARE WITH 1 second ago", 3 * 3)]
+        public void AggregatesOfAWindowReadItOnce(string nrql, int reads)
+        {
+            // Arrange
+            var read = 0;
+            var samples = GetSamples().Take(3).ToArray();
+            var query = new TimeSeriesQuery<Sample>(nrql, s => { read++; return TimeSpan.FromSeconds(s.Time); });
+
+            // Act
+            var result = query.Evaluate(samples);
+
+            // Assert
+            Assert.AreEqual(reads, read);
+            CollectionAssert.AreEqual(Column(new TimeSeriesQuery<Sample>(nrql, s => TimeSpan.FromSeconds(s.Time)).Evaluate(samples.Select(s => s)), "count(*)"), Column(result, "count(*)"));
         }
 
         [TestMethod]
@@ -1552,6 +1600,65 @@ namespace SqlLinq.TimeSeries.UnitTests
             Assert.AreEqual(cancellation.Token, exception.CancellationToken);
         }
 
+        [TestMethod]
+        [DataRow("SELECT rpm * 2 + gear AS A, map / 10 AS B FROM log WHERE RPM > 1000 AND Map >= 30", "Time=00:00:02, A=12003, B=9; Time=00:00:03, A=15003, B=10")]
+        [DataRow("SELECT Gear FROM log WHERE Knock", "Time=00:00:02, Gear=3")]
+        [DataRow("SELECT Gear FROM log WHERE NOT Vtec AND Gear < 3", "Time=00:00:00, Gear=1; Time=00:00:01, Gear=2")]
+        [DataRow("SELECT count(*), count(Map), average(Map), sum(Map), min(Map), max(Map), sum(Gear), max(Rpm) - min(Rpm) AS Spread, count(Knock) FROM log", "count(*)=4, count(Map)=3, average(Map)=73.33333333333333, sum(Map)=220, min(Map)=30, max(Map)=100, sum(Gear)=9, Spread=6700, count(Knock)=3")]
+        [DataRow("SELECT max(Offset), latest(Knock), uniqueCount(Vtec) FROM log", "max(Offset)=00:00:03, latest(Knock)=False, uniqueCount(Vtec)=2")]
+        [DataRow("SELECT average(Rpm) FROM log FACET Vtec, Knock", "Vtec=True, Knock=False, average(Rpm)=7500; Vtec=True, Knock=True, average(Rpm)=6000; Vtec=False, Knock=False, average(Rpm)=3000; Vtec=False, Knock=, average(Rpm)=800")]
+        [DataRow("SELECT count(*) FROM log FACET buckets(Rpm, 8000, 4) AS R, buckets(Map, 100, 2) AS M", "R=>= 6000, M=>= 50, count(*)=2; R=< 2000, M=< 50, count(*)=1; R=2000 - < 4000, M=, count(*)=1")]
+        [DataRow("SELECT count(*) FROM log FACET cases(Rpm < 4000 AS 'low', Rpm >= 4000 AS 'high') AS Band, cases(Knock AS 'knock', NOT Knock AS 'clean') AS Knocked", "Band=low, Knocked=, count(*)=1; Band=low, Knocked=clean, count(*)=1; Band=high, Knocked=knock, count(*)=1; Band=high, Knocked=clean, count(*)=1")]
+        public void TypedMembersBindByNameInEveryClause(string nrql, string expected)
+        {
+            // Act
+            var rows = new TimeSeriesQuery<Frame>(nrql, f => f.Offset).Evaluate(Frames());
+
+            // Assert
+            Assert.AreEqual(expected, string.Join("; ", rows.Select(r => string.Join(", ", r.Select(c => c.Key + "=" + Convert.ToString(c.Value, CultureInfo.InvariantCulture))))));
+        }
+
+        [TestMethod]
+        public void InheritedAndExplicitInterfaceMembersBind()
+        {
+            // Act
+            var inherited = new TimeSeriesQuery<IFrame>("SELECT max(Offset), max(Rpm) FROM log FACET Rpm > 5000 AS Late", f => f.Offset).Evaluate(Frames());
+            var hidden = new TimeSeriesQuery<Frame>("SELECT Hidden FROM log WHERE Hidden > 3000", f => f.Offset).Evaluate(Frames());
+
+            // Assert
+            Assert.AreEqual("True/00:00:03/7500, False/00:00:01/3000", string.Join(", ", inherited.Select(r => r["Late"] + "/" + r["max(Offset)"] + "/" + r["max(Rpm)"])));
+            Assert.AreEqual(3750.0, hidden.Single()["Hidden"]);
+        }
+
+        [TestMethod]
+        public void TypedOperatorsReadMembersUnboxed()
+        {
+            // Arrange
+            var filtered = TimeSeriesSyntaxTree.Parse("SELECT count(*) FROM log WHERE Rpm * 2 > Gear AND Vtec AND Map >= 30 FACET cases(Rpm < 4000 AS 'low', Rpm >= 4000 AS 'high') AS Band").Compile<Frame>();
+            var selected = TimeSeriesSyntaxTree.Parse("SELECT Rpm FROM log").Compile<Frame>();
+            var boxing = new Boxing();
+            var boxed = new Boxing();
+
+            // Act
+            boxing.Visit(filtered.Expression);
+            boxed.Visit(selected.Expression);
+
+            // Assert
+            Assert.IsEmpty(boxing.Members);
+            Assert.AreEqual("Rpm", string.Join(", ", boxed.Members));
+        }
+
+        private static List<Frame> Frames()
+        {
+            return
+            [
+                new Frame { Rpm = 800, Map = 30, Gear = 1, Vtec = false, Knock = null, Offset = TimeSpan.FromSeconds(0) },
+                new Frame { Rpm = 3000, Map = null, Gear = 2, Vtec = false, Knock = false, Offset = TimeSpan.FromSeconds(1) },
+                new Frame { Rpm = 6000, Map = 90, Gear = 3, Vtec = true, Knock = true, Offset = TimeSpan.FromSeconds(2) },
+                new Frame { Rpm = 7500, Map = 100, Gear = 3, Vtec = true, Knock = false, Offset = TimeSpan.FromSeconds(3) },
+            ];
+        }
+
         private static IEnumerable<T> CancelOnRead<T>(IEnumerable<T> rows, int read, CancellationTokenSource cancellation)
         {
             foreach (var row in rows)
@@ -1562,6 +1669,53 @@ namespace SqlLinq.TimeSeries.UnitTests
                 }
 
                 yield return row;
+            }
+        }
+
+        private interface IStamped
+        {
+            TimeSpan Offset { get; }
+        }
+
+        private interface IFrame : IStamped
+        {
+            double Rpm { get; }
+        }
+
+        private interface IHidden
+        {
+            double Hidden { get; }
+        }
+
+        private sealed class Frame : IFrame, IHidden
+        {
+            public double Rpm { get; set; }
+
+            public double? Map { get; set; }
+
+            public int Gear { get; set; }
+
+            public bool Vtec { get; set; }
+
+            public bool? Knock { get; set; }
+
+            public TimeSpan Offset { get; set; }
+
+            double IHidden.Hidden => Rpm / 2;
+        }
+
+        private sealed class Boxing : ExpressionVisitor
+        {
+            internal List<string> Members { get; } = [];
+
+            protected override Expression VisitUnary(UnaryExpression node)
+            {
+                if (node.NodeType == ExpressionType.Convert && node.Type == typeof(object) && node.Operand is MemberExpression member && member.Member.DeclaringType == typeof(Frame))
+                {
+                    Members.Add(member.Member.Name);
+                }
+
+                return base.VisitUnary(node);
             }
         }
     }

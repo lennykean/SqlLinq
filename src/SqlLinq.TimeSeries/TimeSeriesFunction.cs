@@ -18,7 +18,7 @@ namespace SqlLinq.TimeSeries
 
         public Expression Compile(IReadOnlyList<SqlArgument> arguments)
         {
-            throw new SqlException(Name + " can't be used here.");
+            throw new SqlException(Name + " can't be used here.", SqlErrorKind.Semantic);
         }
 
         public static IEnumerable<ISqlFunction> With(IEnumerable<string> names, IEnumerable<ISqlFunction> functions)

@@ -138,7 +138,7 @@ namespace SqlLinq.SyntaxTree
             var duplicate = names.GroupBy(n => n, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
             if (byName && duplicate != null)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The select list has more than one column named '{0}'; give each a different name with AS.", duplicate.Key));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The select list has more than one column named '{0}'; give each a different name with AS.", duplicate.Key), SqlErrorKind.Semantic);
             }
         }
 

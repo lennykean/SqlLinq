@@ -11,9 +11,9 @@ namespace SqlLinq.TimeSeries
     sealed class TimeSeriesQueryTree<T>
     {
         private static readonly Type RowType = typeof((TimeSpan Time, T Item));
-        private static readonly Type RowsType = typeof(List<(TimeSpan Time, T Item)>);
-        private static readonly Type GroupType = typeof((object[] Key, List<(TimeSpan Time, T Item)> Rows));
-        private static readonly Type GroupsType = typeof(List<(object[] Key, List<(TimeSpan Time, T Item)> Rows)>);
+        private static readonly Type RowsType = typeof(IEnumerable<(TimeSpan Time, T Item)>);
+        private static readonly Type GroupType = typeof((object[] Key, IEnumerable<(TimeSpan Time, T Item)> Rows));
+        private static readonly Type GroupsType = typeof(List<(object[] Key, IEnumerable<(TimeSpan Time, T Item)> Rows)>);
         private static readonly Type LookupType = typeof(ILookup<long, (TimeSpan Time, T Item)>);
         private static readonly Type ResultType = typeof(IDictionary<string, object>);
         private static readonly Type ResultsType = typeof(IList<IDictionary<string, object>>);
@@ -26,6 +26,7 @@ namespace SqlLinq.TimeSeries
         private readonly List<(string Name, Expression<Func<T, object>> Value)> _facets = new List<(string, Expression<Func<T, object>>)>();
         private readonly List<(string Name, Aggregate Aggregate)> _aggregates = new List<(string, Aggregate)>();
         private readonly List<(string Name, Expression<Func<T, object>> Value)> _columns = new List<(string, Expression<Func<T, object>>)>();
+        private readonly List<TimeSeriesColumn> _items = new List<TimeSeriesColumn>();
         private readonly Expression<Func<T, object>> _where;
         private readonly Bound _since;
         private readonly Bound _until;
@@ -36,12 +37,14 @@ namespace SqlLinq.TimeSeries
 
         internal TimeSeriesQueryTree(TimeSeriesSyntaxTree syntax)
         {
+            Throw(syntax.CommentError);
             Throw(syntax.SplitError);
             Throw(syntax.SelectError);
             foreach (var facet in syntax.Facets)
             {
                 Throw(facet.Error);
                 _facets.Add((facet.Name, FacetExpression.Lambda<T>(facet)));
+                _items.Add(new TimeSeriesColumn(facet.Name, TimeSeriesColumnKind.Facet, facet));
             }
 
             var factory = new AggregateFactory<T>(argument => SqlExpression.Lambda<T>(argument.Expression));
@@ -70,19 +73,19 @@ namespace SqlLinq.TimeSeries
 
         internal Expression<Func<IEnumerable<T>, Func<T, TimeSpan>, CancellationToken, IList<IDictionary<string, object>>>> Tree { get; }
 
-        internal IReadOnlyList<string> Columns
+        internal IReadOnlyList<TimeSeriesColumn> Columns
         {
             get
             {
-                var comparison = _compare == null ? Array.Empty<string>() : new[] { "Comparison" };
+                var comparison = _compare == null ? Array.Empty<TimeSeriesColumn>() : new[] { new TimeSeriesColumn("Comparison", TimeSeriesColumnKind.Comparison, null) };
                 if (_aggregates.Count == 0)
                 {
-                    return comparison.Append("Time").Concat(_columns.Select(c => c.Name)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                    return Distinct(comparison.Append(new TimeSeriesColumn("Time", TimeSeriesColumnKind.Time, null)).Concat(_items.Where(c => c.Kind == TimeSeriesColumnKind.Select)));
                 }
 
-                var window = _bucketTicks == null && _gap == null ? Array.Empty<string>() : new[] { "BeginTime", "EndTime" };
+                var window = _bucketTicks == null && _gap == null ? Array.Empty<TimeSeriesColumn>() : new[] { new TimeSeriesColumn("BeginTime", TimeSeriesColumnKind.Time, null), new TimeSeriesColumn("EndTime", TimeSeriesColumnKind.Time, null) };
 
-                return window.Concat(comparison).Concat(_facets.Select(f => f.Name)).Concat(_aggregates.Select(a => a.Name)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                return Distinct(window.Concat(comparison).Concat(_items));
             }
         }
 
@@ -111,11 +114,17 @@ namespace SqlLinq.TimeSeries
             }
         }
 
+        private static List<TimeSeriesColumn> Distinct(IEnumerable<TimeSeriesColumn> columns)
+        {
+            return columns.GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase).Select(g => new TimeSeriesColumn(g.Key, g.Last().Kind, g.Last().Item)).ToList();
+        }
+
         private void AddColumn(TimeSeriesSyntaxTree syntax, TimeSeriesExpression column, AggregateFactory<T> factory)
         {
             if (!syntax.Aggregated)
             {
                 _columns.Add((column.Name, SqlExpression.Lambda<T>(column.Expression)));
+                _items.Add(new TimeSeriesColumn(column.Name, TimeSeriesColumnKind.Select, column));
                 return;
             }
 
@@ -124,15 +133,14 @@ namespace SqlLinq.TimeSeries
                 return;
             }
 
+            _items.AddRange(column.Columns.Select(c => new TimeSeriesColumn(c, TimeSeriesColumnKind.Select, column)));
+
             if (column.Whole)
             {
                 var call = column.Aggregates[0];
                 if (call.FunctionName.Equals("percentile", StringComparison.OrdinalIgnoreCase) && call.Arguments.Count > 2)
                 {
-                    foreach (var p in call.Arguments.Skip(1))
-                    {
-                        _aggregates.Add((column.Alias != null ? column.Alias + "." + p.Text : string.Format(CultureInfo.CurrentCulture, "percentile({0}, {1})", call.Arguments[0].Text, p.Text), factory.Create("percentile", new[] { call.Arguments[0], p })));
-                    }
+                    _aggregates.AddRange(call.Arguments.Skip(1).Select((p, i) => (column.Columns[i], factory.Create("percentile", new[] { call.Arguments[0], p }))));
                 }
                 else
                 {
@@ -165,12 +173,15 @@ namespace SqlLinq.TimeSeries
                 Expression.Assign(to, _until == null ? end : Resolve(_until, end)),
                 Expression.Assign(window, Window()),
                 Expression.Convert(results, ResultsType));
+            var item = Expression.Parameter(typeof(T), "item");
+            var read = Expression.Lambda(Expression.Block(Checked(), Expression.New(RowType.GetConstructor(new[] { typeof(TimeSpan), typeof(T) }), Expression.Invoke(_time, item), item)), item);
+            var collection = Expression.OrElse(Expression.TypeIs(_source, typeof(ICollection<T>)), Expression.TypeIs(_source, typeof(IReadOnlyCollection<T>)));
             var body = Expression.Block(
                 new[] { _all },
                 Checked(),
-                Expression.Assign(_all, Expression.Call(typeof(Values), nameof(Values.Read), new[] { typeof(T) }, _source, _time, _cancellation)),
+                Expression.Assign(_all, Expression.Condition(collection, Linq(nameof(Enumerable.Select), new[] { typeof(T), RowType }, _source, read), Expression.Call(typeof(Values), nameof(Values.Read), new[] { typeof(T) }, _source, _time, _cancellation), RowsType)),
                 Expression.Condition(
-                    Expression.Equal(Expression.Property(_all, nameof(List<object>.Count)), Expression.Constant(0)),
+                    Expression.Not(Linq(nameof(Enumerable.Any), RowType, _all)),
                     Expression.Convert(Expression.New(typeof(List<IDictionary<string, object>>)), ResultsType),
                     query,
                     ResultsType));
@@ -194,7 +205,7 @@ namespace SqlLinq.TimeSeries
 
             var body = Expression.Block(
                 new[] { rows },
-                Expression.Assign(rows, Linq(nameof(Enumerable.ToList), RowType, inWindow)),
+                Expression.Assign(rows, inWindow),
                 _aggregates.Count == 0 ? (Expression)Items(rows, comparison) : Grouped(rows, from, to, comparison));
 
             return Expression.Lambda(WindowType, body, from, to, comparison);
@@ -240,14 +251,12 @@ namespace SqlLinq.TimeSeries
                 var previous = Expression.Parameter(RowType, "previous");
                 var index = Expression.Parameter(typeof(int), "index");
                 var split = Expression.Lambda(Expression.GreaterThan(Expression.Subtract(Time(current), Time(previous)), Expression.Constant(_gap.Value)), current, previous, index);
-                var segment = Expression.Parameter(typeof(IEnumerable<(TimeSpan Time, T Item)>), "segment");
                 var session = Expression.Parameter(RowsType, "session");
-                var first = Expression.Property(session, "Item", Expression.Constant(0));
-                var last = Expression.Property(session, "Item", Expression.Subtract(Expression.Property(session, nameof(List<object>.Count)), Expression.Constant(1)));
+                var first = Linq(nameof(Enumerable.First), RowType, session);
+                var last = Linq(nameof(Enumerable.Last), RowType, session);
                 var ordered = Linq(nameof(Enumerable.OrderBy), new[] { RowType, typeof(TimeSpan) }, Expression.Field(group, "Item2"), Times());
                 var segments = Expression.Call(typeof(MoreEnumerable), nameof(MoreEnumerable.Segment), new[] { RowType }, ordered, split);
-                var sessions = Linq(nameof(Enumerable.Select), new[] { segment.Type, RowsType }, segments, Expression.Lambda(Linq(nameof(Enumerable.ToList), RowType, segment), segment));
-                var summaries = Linq(nameof(Enumerable.Select), new[] { RowsType, ResultType }, sessions, Expression.Lambda(Summary(Expression.Field(group, "Item1"), session, Expression.Subtract(Time(last), Time(first)), comparison, Expression.Property(Time(first), nameof(TimeSpan.Ticks))), session));
+                var summaries = Linq(nameof(Enumerable.Select), new[] { RowsType, ResultType }, segments, Expression.Lambda(Summary(Expression.Field(group, "Item1"), session, Expression.Subtract(Time(last), Time(first)), comparison, Expression.Property(Time(first), nameof(TimeSpan.Ticks))), session));
                 results = Linq(nameof(Enumerable.SelectMany), new[] { GroupType, ResultType }, groups, Expression.Lambda(summaries, group));
             }
             else if (_bucketTicks == null)
@@ -262,7 +271,7 @@ namespace SqlLinq.TimeSeries
                 var row = Expression.Parameter(RowType, "row");
                 var bucket = Expression.Parameter(typeof(long), "bucket");
                 var indexed = Expression.Lambda(Linq(nameof(Enumerable.ToLookup), new[] { RowType, typeof(long) }, Expression.Field(group, "Item2"), Expression.Lambda(Index(Time(row), ticks), row)), group);
-                var cell = Expression.Lambda(Summary(Expression.Field(group, "Item1"), Linq(nameof(Enumerable.ToList), RowType, Expression.Property(lookup, "Item", bucket)), Expression.Constant(TimeSpan.FromTicks(ticks)), comparison, Expression.Multiply(bucket, Expression.Constant(ticks))), group, lookup);
+                var cell = Expression.Lambda(Summary(Expression.Field(group, "Item1"), Expression.Property(lookup, "Item", bucket), Expression.Constant(TimeSpan.FromTicks(ticks)), comparison, Expression.Multiply(bucket, Expression.Constant(ticks))), group, lookup);
                 var cells = Expression.Lambda(Expression.Block(Checked(), Linq(nameof(Enumerable.Zip), new[] { GroupType, LookupType, ResultType }, groups, lookups, cell)), bucket);
                 var buckets = Expression.Call(typeof(Values), nameof(Values.Buckets), null, Index(from, ticks), Index(Expression.Subtract(to, Expression.Constant(TimeSpan.FromTicks(1))), ticks));
                 variables.Add(lookups);
@@ -278,16 +287,18 @@ namespace SqlLinq.TimeSeries
         private Expression Facets(Expression rows, Expression window)
         {
             var make = GroupType.GetConstructor(new[] { typeof(object[]), RowsType });
+            var row = Expression.Parameter(RowType, "row");
             if (_facets.Count == 0)
             {
-                return Expression.ListInit(Expression.New(GroupsType), Expression.New(make, Expression.Constant(Array.Empty<object>()), rows));
+                var buffered = _aggregates.Count > 1 && _gap == null && _bucketTicks == null ? Expression.Property(Linq(nameof(Enumerable.ToLookup), new[] { RowType, typeof(bool) }, rows, Expression.Lambda(Expression.Constant(true), row)), "Item", Expression.Constant(true)) : rows;
+
+                return Expression.ListInit(Expression.New(GroupsType), Expression.New(make, Expression.Constant(Array.Empty<object>()), buffered));
             }
 
-            var row = Expression.Parameter(RowType, "row");
             var key = Expression.New(typeof(FacetKey).GetConstructor(new[] { typeof(object[]) }), Expression.NewArrayInit(typeof(object), _facets.Select(f => Inline(f.Value, Item(row)))));
             var grouping = Expression.Parameter(typeof(IGrouping<FacetKey, (TimeSpan Time, T Item)>), "grouping");
             var grouped = Linq(nameof(Enumerable.GroupBy), new[] { RowType, typeof(FacetKey) }, rows, Expression.Lambda(key, row));
-            var keyed = Expression.Lambda(Expression.New(make, Expression.Property(Expression.Property(grouping, nameof(IGrouping<FacetKey, object>.Key)), nameof(FacetKey.Values)), Linq(nameof(Enumerable.ToList), RowType, grouping)), grouping);
+            var keyed = Expression.Lambda(Expression.New(make, Expression.Property(Expression.Property(grouping, nameof(IGrouping<FacetKey, object>.Key)), nameof(FacetKey.Values)), grouping), grouping);
             var group = Expression.Parameter(GroupType, "group");
             var rank = Expression.Lambda(Expression.Call(typeof(Values), nameof(Values.SortKey), null, _aggregates[0].Aggregate(Expression.Field(group, "Item2"), window)), group);
             Expression ranked = Linq(nameof(Enumerable.OrderByDescending), new[] { GroupType, typeof(object) }, Linq(nameof(Enumerable.Select), new[] { grouping.Type, GroupType }, grouped, keyed), rank);

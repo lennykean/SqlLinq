@@ -175,5 +175,79 @@ namespace SqlLinq.UnitTests
             // Assert
             Assert.AreEqual("Human=3, Kaylon=1, Moclan=1, Xelayan=1", results.Single());
         }
+
+        [TestMethod]
+        public void InheritedAndExplicitInterfaceMembersBind()
+        {
+            // Arrange
+            var frames = new List<Frame> { new Frame { Rpm = 800, Gear = 1, Offset = TimeSpan.FromSeconds(1) }, new Frame { Rpm = 6000, Gear = 3, Vtec = true, Offset = TimeSpan.FromSeconds(2) } };
+
+            // Act
+            var inherited = frames.Query<IFrame, IDictionary<string, object>>("SELECT offset, Rpm FROM this WHERE Rpm > 1000").Single();
+            var hidden = frames.Query<Frame, IDictionary<string, object>>("SELECT Hidden FROM this WHERE Hidden > 1000").Single();
+
+            // Assert
+            Assert.AreEqual(TimeSpan.FromSeconds(2) + "/6000", inherited["offset"] + "/" + inherited["Rpm"]);
+            Assert.AreEqual(3000.0, hidden["Hidden"]);
+        }
+
+        [TestMethod]
+        public void TypedOperatorsReadMembersUnboxed()
+        {
+            // Arrange
+            var plan = SqlSyntaxTree.Parse("SELECT * FROM this WHERE Rpm * 2 > Gear AND Vtec AND Map >= 30").Compile<Frame, Frame>();
+            var boxing = new Boxing();
+
+            // Act
+            boxing.Visit(plan.Expression);
+
+            // Assert
+            Assert.IsEmpty(boxing.Members);
+        }
+
+        private interface IStamped
+        {
+            TimeSpan Offset { get; }
+        }
+
+        private interface IFrame : IStamped
+        {
+            double Rpm { get; }
+        }
+
+        private interface IHidden
+        {
+            double Hidden { get; }
+        }
+
+        private sealed class Frame : IFrame, IHidden
+        {
+            public double Rpm { get; set; }
+
+            public double? Map { get; set; }
+
+            public int Gear { get; set; }
+
+            public bool Vtec { get; set; }
+
+            public TimeSpan Offset { get; set; }
+
+            double IHidden.Hidden => Rpm / 2;
+        }
+
+        private sealed class Boxing : System.Linq.Expressions.ExpressionVisitor
+        {
+            internal List<string> Members { get; } = [];
+
+            protected override System.Linq.Expressions.Expression VisitUnary(System.Linq.Expressions.UnaryExpression node)
+            {
+                if (node.NodeType == System.Linq.Expressions.ExpressionType.Convert && node.Type == typeof(object) && node.Operand is System.Linq.Expressions.MemberExpression member && member.Member.DeclaringType == typeof(Frame))
+                {
+                    Members.Add(member.Member.Name);
+                }
+
+                return base.VisitUnary(node);
+            }
+        }
     }
 }

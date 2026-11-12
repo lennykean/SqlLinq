@@ -103,7 +103,7 @@ namespace SqlLinq.SyntaxTree
                 return Expression.Call(typeof(SelectNode), nameof(DottedKey), new[] { valueType }, Expression.Convert(row, typeof(object)), Expression.Constant(id));
             }
 
-            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query.", id.Qualifier, id.LookupId));
+            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query.", id.Qualifier, id.LookupId), SqlErrorKind.UnknownName);
         }
 
         private static TValue DottedKey<TValue>(object row, Identifier id)
@@ -122,7 +122,7 @@ namespace SqlLinq.SyntaxTree
                 }
             }
 
-            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query, or a field of the row.", id.Qualifier, id.LookupId));
+            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query, or a field of the row.", id.Qualifier, id.LookupId), SqlErrorKind.UnknownName);
         }
 
         public Columns Columns
@@ -177,7 +177,7 @@ namespace SqlLinq.SyntaxTree
         internal override void CheckSyntax()
         {
             if (GroupByClause == null && Columns.Aggregates.Any() && !Columns.IsAggregateOnlyQuery)
-                throw new SqlException("Your query contains fields and aggregates but no GROUP BY clause.\n");
+                throw new SqlException("Your query contains fields and aggregates but no GROUP BY clause.\n", SqlErrorKind.Semantic);
 
             if ((Columns.Distinct || GroupByClause != null) && OrderByClause != null)
             {
@@ -185,7 +185,7 @@ namespace SqlLinq.SyntaxTree
                 foreach (OrderByItem item in OrderByClause.OrderByItems)
                 {
                     if (item.SelectColumn() == null && !selectFields.Contains(item.Id.LookupId, StringComparer.OrdinalIgnoreCase))
-                        throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The query specifies DISTINCT or GROUP BY but contains an ORDER BY field '{0}' that is not included in the result list.", item.Id.LookupId));
+                        throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The query specifies DISTINCT or GROUP BY but contains an ORDER BY field '{0}' that is not included in the result list.", item.Id.LookupId), SqlErrorKind.Semantic);
                 }
             }
 

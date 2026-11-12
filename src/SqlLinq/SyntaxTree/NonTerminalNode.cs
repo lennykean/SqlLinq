@@ -7,6 +7,8 @@ using System.Xml.Linq;
 
 using GoldParser;
 
+using SqlLinq.SyntaxTree.Expressions;
+
 namespace SqlLinq.SyntaxTree
 {
     public class NonTerminalNode : SyntaxNode
@@ -55,7 +57,66 @@ namespace SqlLinq.SyntaxTree
                 throw new ArgumentNullException(nameof(replacement));
             }
 
-            return Copy(replacement);
+            var copy = Copy(node =>
+            {
+                var replaced = replacement(node);
+                if (replaced == null || replaced == node)
+                {
+                    return replaced;
+                }
+
+                var placed = replaced.Copy();
+                foreach (var terminal in placed.Terminals())
+                {
+                    terminal.Place(node.Start, node.Length);
+                }
+
+                return placed;
+            });
+            if (copy is ExpressionNode rewritten && this is ExpressionNode written)
+            {
+                rewritten.Source = written.Source ?? written.ToSql();
+            }
+
+            return copy;
+        }
+
+        public NonTerminalNode Bind(IEnumerable<ISqlFunction> functions)
+        {
+            if (functions == null)
+            {
+                throw new ArgumentNullException(nameof(functions));
+            }
+
+            var copy = Copy();
+            copy.Bind(functions.ToDictionary(f => f.Name, StringComparer.OrdinalIgnoreCase));
+
+            return copy;
+        }
+
+        private void Bind(Dictionary<string, ISqlFunction> functions)
+        {
+            foreach (var node in FindDescendants<NonTerminalNode>().Prepend(this))
+            {
+                if (node is NodeWithId call && call.Function != null)
+                {
+                    call.Function = functions.TryGetValue(call.FunctionName, out var function) ? function : call.Function;
+                    Bind(call.Arguments, functions);
+                }
+                else if (node is ColumnSource column && column.Function != null)
+                {
+                    column.Function = functions.TryGetValue(column.FunctionName, out var function) ? function : column.Function;
+                    Bind(column.Arguments, functions);
+                }
+            }
+        }
+
+        private static void Bind(IEnumerable<ArgumentNode> arguments, Dictionary<string, ISqlFunction> functions)
+        {
+            foreach (var argument in arguments.Where(a => a.Expression != null))
+            {
+                argument.Expression.Bind(functions);
+            }
         }
 
         /// <summary>

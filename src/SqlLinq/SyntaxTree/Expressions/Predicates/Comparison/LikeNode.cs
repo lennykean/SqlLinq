@@ -73,7 +73,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 
                 if (i == pattern.Length - 1)
                 {
-                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The LIKE pattern '{0}' ends with its escape character '{1}'.", pattern, escape));
+                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The LIKE pattern '{0}' ends with its escape character '{1}'.", pattern, escape), SqlErrorKind.Semantic);
                 }
 
                 builder.Append(ConvertWildcards(run.ToString())).Append(Regex.Escape(pattern[++i].ToString()));
@@ -152,7 +152,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             var escape = SqlSyntax.Unquote(literal);
             if (escape.Length != 1)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The LIKE escape '{0}' must be exactly one character.", escape));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The LIKE escape '{0}' must be exactly one character.", escape), SqlErrorKind.Semantic);
             }
 
             return escape[0];

@@ -33,6 +33,26 @@ namespace SqlLinq
             Length = length;
         }
 
+        public SqlException(string message, SqlErrorKind kind) : base(message)
+        {
+            Kind = kind;
+        }
+
+        public SqlException(string message, Exception inner, SqlErrorKind kind) : base(message, inner)
+        {
+            Kind = kind;
+        }
+
+        public SqlException(string message, SqlErrorKind kind, int start, int length) : this(message, start, length)
+        {
+            Kind = kind;
+        }
+
+        public SqlException(string message, Exception inner, SqlErrorKind kind, int start, int length) : this(message, inner, start, length)
+        {
+            Kind = kind;
+        }
+
         protected SqlException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         {
@@ -42,11 +62,13 @@ namespace SqlLinq
 
         public int Length { get; }
 
+        public SqlErrorKind Kind { get; }
+
         internal static void ThrowIfNestedTooDeeply()
         {
             if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
             {
-                throw new SqlException("The query is nested too deeply.");
+                throw new SqlException("The query is nested too deeply.", SqlErrorKind.Semantic);
             }
         }
     }

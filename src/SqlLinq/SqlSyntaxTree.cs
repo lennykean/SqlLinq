@@ -39,7 +39,7 @@ namespace SqlLinq
         {
             var parser = new SqlParser(functions, 0, true);
             var parsed = Read(() => sql?.Length == 0 ? parser.Parse(new StringReader(sql)) : parser.Parse(sql), out var error);
-            error ??= parsed ? parser.ArgumentError : new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin statement\n\t{1}", parser.ErrorString, parser.ErrorLine), parser.ErrorStart, parser.ErrorLength);
+            error ??= parsed ? parser.ArgumentError : new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin statement\n\t{1}", parser.ErrorString, parser.ErrorLine), parser.ErrorKind, parser.ErrorStart, parser.ErrorLength);
 
             return Build(sql, parsed ? parser.SyntaxTree : null, error, parser);
         }
@@ -69,7 +69,7 @@ namespace SqlLinq
             var expression = text.Substring(start, length);
             var parser = new SqlParser(functions, start, true);
             var parsed = Read(() => parser.ParseExpression(expression), out var error);
-            error ??= parsed ? parser.ArgumentError : new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin expression\n\t{1}", parser.ErrorString, expression), parser.ErrorStart, parser.ErrorLength);
+            error ??= parsed ? parser.ArgumentError : new SqlException(string.Format(CultureInfo.CurrentCulture, "SQL parse error:\n\t{0}\nin expression\n\t{1}", parser.ErrorString, expression), parser.ErrorKind, parser.ErrorStart, parser.ErrorLength);
 
             return Build(text, parsed ? parser.Expression : null, error, parser);
         }
@@ -84,6 +84,33 @@ namespace SqlLinq
             var root = Root.Replace(replacement);
 
             return new SqlSyntaxTree(Text, root, Error, Members(root).Select(t => SqlSyntax.Name(t)).ToList());
+        }
+
+        public SqlSyntaxTree Bind(IEnumerable<ISqlFunction> functions)
+        {
+            if (Root == null)
+            {
+                throw new InvalidOperationException("The text didn't parse, so it has no tree to bind.");
+            }
+
+            return new SqlSyntaxTree(Text, Root.Bind(functions), Error, Names);
+        }
+
+        public SqlSyntaxTree Shift(string text, int offset)
+        {
+            if (text == null)
+            {
+                throw new ArgumentNullException(nameof(text));
+            }
+
+            var root = Root?.Copy();
+            if (root != null)
+            {
+                Shift(Root, root, offset);
+                Locate(text, new[] { root });
+            }
+
+            return new SqlSyntaxTree(text, root, Shift(Error, offset), Names.Select(n => n.Start < 0 ? n : new Identifier(n.LookupId, n.Start + offset, n.Length)).ToList());
         }
 
         public SqlPlan<TResult> Compile<TSource, TResult>()
@@ -154,6 +181,52 @@ namespace SqlLinq
                 line = line < 0 ? ~line - 1 : line;
                 terminal.Locate(line + 1, terminal.Start - lines[line] + 1);
             }
+        }
+
+        private static void Shift(NonTerminalNode original, NonTerminalNode copy, int offset)
+        {
+            if (copy is ExpressionNode expression)
+            {
+                expression.Source = ((ExpressionNode)original).Source;
+            }
+
+            for (var i = 0; i < copy.Children.Count; i++)
+            {
+                if (copy.Children[i] is TerminalNode terminal)
+                {
+                    terminal.Place(terminal.Start < 0 ? terminal.Start : terminal.Start + offset, terminal.Length);
+                }
+                else
+                {
+                    Shift((NonTerminalNode)original.Children[i], (NonTerminalNode)copy.Children[i], offset);
+                }
+            }
+
+            var from = Arguments(original).ToList();
+            var to = Arguments(copy).ToList();
+            for (var i = 0; i < to.Count; i++)
+            {
+                if (to[i].Expression != null)
+                {
+                    Shift(from[i].Expression, to[i].Expression, offset);
+                }
+
+                to[i] = new ArgumentNode(to[i].Text, to[i].Expression, Shift(to[i].Error, offset), to[i].Start + offset, to[i].Length) { Parent = copy };
+            }
+
+            if (copy is NodeWithId call && call.Arguments != null)
+            {
+                call.Arguments = to;
+            }
+            else if (copy is ColumnSource column && column.Arguments != null)
+            {
+                column.Arguments = to;
+            }
+        }
+
+        private static SqlException Shift(SqlException error, int offset)
+        {
+            return error == null || error.Start < 0 ? error : new SqlException(error.Message, error.InnerException, error.Kind, error.Start + offset, error.Length);
         }
 
         private static IEnumerable<TerminalNode> Terminals(NonTerminalNode node)

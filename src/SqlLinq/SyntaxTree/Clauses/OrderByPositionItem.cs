@@ -40,7 +40,7 @@ namespace SqlLinq.SyntaxTree.Clauses
             var fields = tSource == typeof(object) || tSource.IsDictionary() || EnclosingSelect().Layout != null ? new List<string>() : tSource.ColumnNames().ToList();
             if (fields.Count == 0)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} needs a select list; SELECT * over dictionary or dynamic rows has no fixed column order.", Position));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} needs a select list; SELECT * over dictionary or dynamic rows has no fixed column order.", Position), SqlErrorKind.Semantic);
             }
 
             return ExpressionFactory.CreateFieldSelectorLambda(tSource, Column(fields));
@@ -50,7 +50,7 @@ namespace SqlLinq.SyntaxTree.Clauses
         {
             if (!int.TryParse(Position, NumberStyles.None, CultureInfo.InvariantCulture, out var position) || position < 1 || position > columns.Count)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} is out of range; the select list has {1} columns.", Position, columns.Count));
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} is out of range; the select list has {1} columns.", Position, columns.Count), SqlErrorKind.Semantic);
             }
 
             return columns[position - 1];

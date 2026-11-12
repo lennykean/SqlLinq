@@ -46,7 +46,7 @@ namespace SqlLinq.TimeSeries
             }
             catch (SqlException e) when (e.Start < 0)
             {
-                throw new SqlException(e.Message, e.InnerException, call.Start, call.Length);
+                throw new SqlException(e.Message, e.InnerException, e.Kind, call.Start, call.Length);
             }
         }
 
@@ -60,9 +60,9 @@ namespace SqlLinq.TimeSeries
                 case "count":
                     if (args.Count == 1 && args[0] == "*")
                     {
-                        return (rows, window) => Boxed(Expression.Property(rows, nameof(List<object>.Count)));
+                        return (rows, window) => Boxed(Call(nameof(Enumerable.Count), Row, rows));
                     }
-                    return Over(name, args, first, values => Boxed(Expression.Property(values, nameof(List<object>.Count))));
+                    return Over(name, args, first, values => Boxed(Call(nameof(Enumerable.Count), typeof(object), values)));
                 case "uniquecount":
                     return Over(name, args, first, values => Boxed(Call(nameof(Enumerable.Count), typeof(object), Call(nameof(Enumerable.Distinct), typeof(object), values))));
                 case "sum":
@@ -81,7 +81,7 @@ namespace SqlLinq.TimeSeries
                 case "percentile":
                     if (args.Count != 2)
                     {
-                        throw new SqlException("percentile takes (value, percentile) here, e.g. percentile(RPM, 95).");
+                        throw new SqlException("percentile takes (value, percentile) here, e.g. percentile(RPM, 95).", SqlErrorKind.Semantic);
                     }
                     var percentile = Values.ParsePercentile(args[1]);
 
@@ -95,25 +95,25 @@ namespace SqlLinq.TimeSeries
                 case "derivative":
                     return Derivative(args, arguments);
             }
-            throw new SqlException(name + " isn't an aggregate function.");
+            throw new SqlException(name + " isn't an aggregate function.", SqlErrorKind.UnknownName);
         }
 
         private Aggregate Over(string name, List<string> args, ArgumentNode first, Func<Expression, Expression> aggregate)
         {
             if (args.Count != 1 || args[0].Length == 0)
             {
-                throw new SqlException(name + " takes one value, e.g. " + name + "(RPM).");
+                throw new SqlException(name + " takes one value, e.g. " + name + "(RPM).", SqlErrorKind.Semantic);
             }
 
             var value = _compile(first);
             return (rows, window) =>
             {
-                var values = Expression.Variable(typeof(List<object>), "values");
+                var values = Expression.Variable(typeof(IEnumerable<object>), "values");
                 var row = Expression.Parameter(Row, "row");
                 var selected = Call(nameof(Enumerable.Select), new[] { Row, typeof(object) }, rows, Expression.Lambda(TimeSeriesQueryTree<T>.Inline(value, Expression.Field(row, "Item2")), row));
                 var present = Call(nameof(Enumerable.OfType), typeof(object), selected);
 
-                return Expression.Block(new[] { values }, Expression.Assign(values, Call(nameof(Enumerable.ToList), typeof(object), present)), aggregate(values));
+                return Expression.Block(new[] { values }, Expression.Assign(values, present), aggregate(values));
             };
         }
 
@@ -121,7 +121,7 @@ namespace SqlLinq.TimeSeries
         {
             if (args.Count != 1)
             {
-                throw new SqlException(name + " takes one value, e.g. " + name + "(ECT).");
+                throw new SqlException(name + " takes one value, e.g. " + name + "(ECT).", SqlErrorKind.Semantic);
             }
 
             var value = _compile(first);
@@ -144,7 +144,7 @@ namespace SqlLinq.TimeSeries
             var call = args.Count == 2 ? arguments[0].Expression as NodeWithId : null;
             if (call == null || !(call.Function is TimeSeriesFunction) || !Names.Contains(call.FunctionName))
             {
-                throw new SqlException("rate takes (aggregate, duration), e.g. rate(count(*), 1 second).");
+                throw new SqlException("rate takes (aggregate, duration), e.g. rate(count(*), 1 second).", SqlErrorKind.Semantic);
             }
 
             var inner = Create(call);
@@ -152,7 +152,7 @@ namespace SqlLinq.TimeSeries
             var per = Bound.Parse(args[1], "rate", arguments[1].Start).Offset.Ticks;
             if (per <= 0)
             {
-                throw new SqlException("rate needs a positive duration, e.g. rate(count(*), 1 second).");
+                throw new SqlException("rate needs a positive duration, e.g. rate(count(*), 1 second).", SqlErrorKind.Semantic);
             }
 
             return (rows, window) =>
@@ -169,13 +169,13 @@ namespace SqlLinq.TimeSeries
         {
             if (args.Count != 2 || args[0].Length == 0)
             {
-                throw new SqlException("derivative takes (value, duration), e.g. derivative(RPM, 1 second).");
+                throw new SqlException("derivative takes (value, duration), e.g. derivative(RPM, 1 second).", SqlErrorKind.Semantic);
             }
 
             var per = Bound.Parse(args[1], "derivative", arguments[1].Start);
             if (per.Ago || per.Offset <= TimeSpan.Zero)
             {
-                throw new SqlException("derivative needs a positive duration, e.g. derivative(RPM, 1 second).");
+                throw new SqlException("derivative needs a positive duration, e.g. derivative(RPM, 1 second).", SqlErrorKind.Semantic);
             }
 
             var value = _compile(arguments[0]);
@@ -217,7 +217,7 @@ namespace SqlLinq.TimeSeries
 
         private static ConditionalExpression UnlessEmpty(Expression values, Expression value)
         {
-            return Expression.Condition(Expression.Equal(Expression.Property(values, nameof(List<object>.Count)), Expression.Constant(0)), Expression.Constant(null), value);
+            return Expression.Condition(Expression.Not(Call(nameof(Enumerable.Any), typeof(object), values)), Expression.Constant(null), value);
         }
 
         private static UnaryExpression Boxed(Expression value)
