@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Dynamic;
-using System.Text;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -36,7 +35,7 @@ namespace SqlLinq.UnitTests
                 new ExpandoObject()
             };
             var result = source.Query<IDictionary<string, object>, dynamic>("SELECT * FROM this WHERE NonExistent = true");
-            Assert.IsFalse(result.Any());
+            Assert.ThrowsExactly<KeyNotFoundException>(() => result.Any());
         }
 
         [TestMethod]
@@ -48,7 +47,8 @@ namespace SqlLinq.UnitTests
             dynamic two = new ExpandoObject();
             two.BoolProp = false;
 
-            dynamic three = new ExpandoObject(); // doesn't have the property
+            dynamic three = new ExpandoObject();
+            three.BoolProp = null;
 
             List<ExpandoObject> source = new List<ExpandoObject>();
             source.Add((ExpandoObject)one);

@@ -41,25 +41,25 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name FROM nowhere", "'nowhere' isn't one of the sources")]
-        [DataRow("SELECT * FROM nowhere n JOIN ships s ON n.ShipId = s.Id", "'nowhere' isn't one of the sources")]
-        [DataRow("SELECT * FROM crew c, ships s, nowhere n WHERE c.ShipId = s.Id", "'nowhere' isn't one of the sources")]
-        [DataRow("SELECT c.Name FROM crew c WHERE (SELECT COUNT(*) FROM nowhere n WHERE n.Id = c.ShipId) = 0", "'nowhere' isn't one of the sources")]
+        [DataRow("SELECT Name FROM nowhere", "'nowhere' can't be read because it isn't one of the sources")]
+        [DataRow("SELECT * FROM nowhere n JOIN ships s ON n.ShipId = s.Id", "'nowhere' can't be read because it isn't one of the sources")]
+        [DataRow("SELECT * FROM crew c, ships s, nowhere n WHERE c.ShipId = s.Id", "'nowhere' can't be read because it isn't one of the sources")]
+        [DataRow("SELECT c.Name FROM crew c WHERE (SELECT COUNT(*) FROM nowhere n WHERE n.Id = c.ShipId) = 0", "'nowhere' can't be read because it isn't one of the sources")]
         [DataRow("SELECT c.Species, COUNT(*) FROM crew c GROUP BY x.Species", "x.Species")]
-        [DataRow("SELECT * FROM crew c JOIN ships s ON s.Id = s.Id", "must compare a field of the joined source with a field of an earlier source")]
-        [DataRow("SELECT * FROM crew c JOIN ships s ON c.ShipId = k.Id JOIN classes k ON s.Class = k.Class", "must compare a field of the joined source with a field of an earlier source")]
-        [DataRow("SELECT * FROM crew c JOIN ships s ON c.ShipId = s.Id JOIN classes k ON c.Species = s.Class", "must compare a field of the joined source with a field of an earlier source")]
+        [DataRow("SELECT * FROM crew c JOIN ships s ON s.Id = s.Id", "doesn't compare a field of the joined source with a field of an earlier source")]
+        [DataRow("SELECT * FROM crew c JOIN ships s ON c.ShipId = k.Id JOIN classes k ON s.Class = k.Class", "doesn't compare a field of the joined source with a field of an earlier source")]
+        [DataRow("SELECT * FROM crew c JOIN ships s ON c.ShipId = s.Id JOIN classes k ON c.Species = s.Class", "doesn't compare a field of the joined source with a field of an earlier source")]
         [DataRow("SELECT * FROM crew c JOIN ships C ON c.ShipId = C.Id", "joined more than once")]
         [DataRow("SELECT * FROM crew JOIN crew ON crew.Rank = crew.Rank", "joined more than once")]
         [DataRow("SELECT * FROM crew c, ships s, crew c WHERE c.ShipId = s.Id", "joined more than once")]
         [DataRow("SELECT * FROM crew c JOIN ships s ON c.ShipId = s.Id JOIN classes s ON s.Class = s.Class", "joined more than once")]
-        [DataRow("SELECT c.Name FROM crew c WHERE c.Rank = (SELECT Rank FROM crew WHERE Species = 'Human')", "The subquery returned more than one row.")]
-        [DataRow("SELECT s.Name FROM ships s WHERE s.Id = (SELECT c.ShipId FROM crew c WHERE c.Rank = 3)", "The subquery returned more than one row.")]
-        [DataRow("SELECT s.Name FROM ships s WHERE (SELECT c.Name FROM crew c WHERE c.ShipId = s.Id) = 'Bortus'", "The subquery returned more than one row.")]
-        [DataRow("SELECT Species, COUNT(*) FROM crew GROUP BY Species HAVING COUNT(*) = (SELECT Id FROM ships)", "The subquery returned more than one row.")]
-        [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = s.Id WHERE s.Class = (SELECT Class FROM ships)", "The subquery returned more than one row.")]
-        [DataRow("SELECT c.Name FROM crew c, ships s WHERE c.ShipId = s.Id AND s.Name = (SELECT Name FROM ships WHERE Class = 'Exploratory')", "The subquery returned more than one row.")]
-        [DataRow("SELECT s.Name, COUNT(*) FROM crew c JOIN ships s ON c.ShipId = s.Id WHERE COUNT(*) > 1 GROUP BY s.Name", "Aggregate expressions are not valid in a WHERE clause")]
+        [DataRow("SELECT c.Name FROM crew c WHERE c.Rank = (SELECT Rank FROM crew WHERE Species = 'Human')", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT s.Name FROM ships s WHERE s.Id = (SELECT c.ShipId FROM crew c WHERE c.Rank = 3)", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT s.Name FROM ships s WHERE (SELECT c.Name FROM crew c WHERE c.ShipId = s.Id) = 'Bortus'", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT Species, COUNT(*) FROM crew GROUP BY Species HAVING COUNT(*) = (SELECT Id FROM ships)", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = s.Id WHERE s.Class = (SELECT Class FROM ships)", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT c.Name FROM crew c, ships s WHERE c.ShipId = s.Id AND s.Name = (SELECT Name FROM ships WHERE Class = 'Exploratory')", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT s.Name, COUNT(*) FROM crew c JOIN ships s ON c.ShipId = s.Id WHERE COUNT(*) > 1 GROUP BY s.Name", "WHERE can't use an aggregate because it filters rows before grouping")]
         public void TableMistakesThrowSqlException(string sql, string message)
         {
             // Act
@@ -121,12 +121,12 @@ namespace SqlLinq.UnitTests
             thread.Join();
 
             // Assert
-            Assert.AreEqual("The query is nested too deeply.", thrown?.Message);
+            Assert.AreEqual("The query can't be translated because it's nested too deeply.", thrown?.Message);
         }
 
         [TestMethod]
-        [DataRow("SELECT c.Name FROM crew c WHERE (SELECT COUNT(*) FROM ships s WHERE s.Id = x.ShipId) > 0", "x in x.ShipId isn't a source or alias of this query")]
-        [DataRow("SELECT c.Name, c.Species FROM crew c WHERE c.Rank > 3 AND nothing.Rank IS NULL", "nothing in nothing.Rank isn't a source or alias of this query")]
+        [DataRow("SELECT c.Name FROM crew c WHERE (SELECT COUNT(*) FROM ships s WHERE s.Id = x.ShipId) > 0", "x.ShipId can't be read because x isn't a source or alias of this query")]
+        [DataRow("SELECT c.Name, c.Species FROM crew c WHERE c.Rank > 3 AND nothing.Rank IS NULL", "nothing.Rank can't be read because nothing isn't a source or alias of this query")]
         public void UnknownAliasesInTypedWhereThrowSqlException(string sql, string message)
         {
             // Act
@@ -137,11 +137,11 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT * FROM this t WHERE x.Rank > 3", "x in x.Rank isn't a source or alias of this query")]
-        [DataRow("SELECT * FROM this WHERE that.Rank > 3", "that in that.Rank isn't a source or alias of this query")]
-        [DataRow("SELECT * FROM this WHERE Rank > 3 AND nothing.Rank IS NULL", "nothing in nothing.Rank isn't a source or alias of this query")]
-        [DataRow("SELECT * FROM this WHERE Rank = (SELECT Rank FROM this WHERE Species = 'Human')", "The subquery returned more than one row.")]
-        [DataRow("SELECT * FROM this WHERE COUNT(*) > 1", "Aggregate expressions are not valid in a WHERE clause")]
+        [DataRow("SELECT * FROM this t WHERE x.Rank > 3", "x.Rank can't be read because x isn't a source or alias of this query")]
+        [DataRow("SELECT * FROM this WHERE that.Rank > 3", "that.Rank can't be read because that isn't a source or alias of this query")]
+        [DataRow("SELECT * FROM this WHERE Rank > 3 AND nothing.Rank IS NULL", "nothing.Rank can't be read because nothing isn't a source or alias of this query")]
+        [DataRow("SELECT * FROM this WHERE Rank = (SELECT Rank FROM this WHERE Species = 'Human')", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT * FROM this WHERE COUNT(*) > 1", "WHERE can't use an aggregate because it filters rows before grouping")]
         public void QueryMistakesThrowSqlException(string sql, string message)
         {
             // Act
@@ -152,8 +152,8 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT * FROM this WHERE Rank = (SELECT Rank FROM this WHERE Species = 'Human')", "The subquery returned more than one row.")]
-        [DataRow("SELECT * FROM this WHERE COUNT(*) > 1", "Aggregate expressions are not valid in a WHERE clause")]
+        [DataRow("SELECT * FROM this WHERE Rank = (SELECT Rank FROM this WHERE Species = 'Human')", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT * FROM this WHERE COUNT(*) > 1", "WHERE can't use an aggregate because it filters rows before grouping")]
         public void DictionaryQueryMistakesThrowSqlException(string sql, string message)
         {
             // Act
@@ -164,10 +164,10 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name FROM this WHERE Rank > 3", "The query does not contain a JOIN expression")]
-        [DataRow("SELECT Name FROM this, that WHERE this.ShipId = that.Id", "The query does not contain a JOIN expression")]
-        [DataRow("SELECT Name FROM this JOIN that ON this.ShipId = this.Rank", "must compare a field of the joined source with a field of an earlier source")]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this JOIN that ON this.ShipId = that.Id WHERE Rank = (SELECT Id FROM that)", "The subquery returned more than one row.")]
+        [DataRow("SELECT Name FROM this WHERE Rank > 3", "The query can't join two sources without a JOIN expression")]
+        [DataRow("SELECT Name FROM this, that WHERE this.ShipId = that.Id", "The query can't join two sources without a JOIN expression")]
+        [DataRow("SELECT Name FROM this JOIN that ON this.ShipId = this.Rank", "doesn't compare a field of the joined source with a field of an earlier source")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this JOIN that ON this.ShipId = that.Id WHERE Rank = (SELECT Id FROM that)", "The subquery can't be used as a value because it returned more than one row.")]
         public void JoinQueryMistakesThrowSqlException(string sql, string message)
         {
             // Act

@@ -36,7 +36,7 @@ var warm = readings.UnitQuery("SELECT * FROM this WHERE convert(Temperature, '°
 
 ## Conversions
 
-Units are written as abbreviations, such as `°F` or `psi`. Only linear conversions are supported.
+Units are written as abbreviations, such as `°F` or `psi`.
 
 | Form                                | Converts                             | Example                                     |
 | ----------------------------------- | ------------------------------------ | ------------------------------------------- |

@@ -72,6 +72,12 @@ namespace SqlLinq
                 throw error;
             }
 
+            var subquery = expression.Subqueries().FirstOrDefault();
+            if (subquery != null)
+            {
+                throw new SqlException("The subquery can't be evaluated because the expression has no table for it to read.", SqlErrorKind.Semantic, subquery.Start, subquery.Length);
+            }
+
             var node = (ExpressionNode)expression.Copy();
             var source = Expression.Parameter(typeof(IEnumerable<T>), "source");
             var item = Expression.Parameter(typeof(T), "item");

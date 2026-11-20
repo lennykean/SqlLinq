@@ -17,14 +17,6 @@ namespace SqlLinq.SyntaxTree.Clauses
         {
         }
 
-        internal override void CheckSyntax()
-        {
-            if (GroupByItems.Count() > 8)
-                throw new SqlException("Only 8 fields or less are currently supported for grouping", SqlErrorKind.Semantic);
-
-            base.CheckSyntax();
-        }
-
         public IEnumerable<NodeWithId> GroupByItems
         {
             get
@@ -44,11 +36,11 @@ namespace SqlLinq.SyntaxTree.Clauses
         {
             var select = EnclosingSelect();
             var item = Expression.Parameter(tSource, "item");
-            var keys = GroupByItems.Select(g => SelectNode.CreateFieldSelector(select, g.Id, item)).ToList();
+            var keys = GroupByItems.Select(g => g.CreateExpression(rows, item)).ToList();
             Validate();
 
-            var types = keys.Select(k => k.Type).ToArray();
-            var keyType = GetTupleTemplate(types.Length).MakeGenericType(types);
+            var tuple = NewKey(keys);
+            var keyType = tuple.Type;
             var sequence = QueryTree.Sequence(tSource);
             var key = Expression.Parameter(keyType, "key");
             var group = Expression.Parameter(sequence, "group");
@@ -57,7 +49,7 @@ namespace SqlLinq.SyntaxTree.Clauses
                 nameof(Enumerable.GroupBy),
                 new[] { tSource, keyType, sequence },
                 rows,
-                Expression.Lambda(Expression.New(keyType.GetConstructor(types), keys), item),
+                Expression.Lambda(tuple, item),
                 Expression.Lambda(group, key, group));
 
             if (having != null)
@@ -73,20 +65,34 @@ namespace SqlLinq.SyntaxTree.Clauses
             var select = EnclosingSelect();
             var keys = new HashSet<string>(GroupFields(), StringComparer.OrdinalIgnoreCase);
             var columns = select.Columns.ColumnSources.ToList();
-            var selected = columns.Where(c => !(c is AggregateNode) && !(c is ComputedColumn) && c.Function == null).Select(c => c.Id.LookupId);
-            var computed = columns.OfType<ComputedColumn>().SelectMany(c => c.Fields).Concat(columns.SelectMany(c => c.ArgumentFields)).Select(f => f.Id.LookupId);
+            var selected = columns.Where(c => !(c is AggregateNode) && !(c is ComputedColumn) && c.Function == null).Select(c => c.Id);
+            var called = columns.Where(c => c.Function != null && !keys.Contains(NodeWithId.Call(c.FunctionName, c.Arguments)));
+            bool grouped(NodeWithId f) => f.AncestorsBelow(select).OfType<NodeWithId>().Any(c => c.Function != null && keys.Contains(c.ToSql()));
+            var computed = columns.OfType<ComputedColumn>().SelectMany(c => c.Fields).Concat(called.SelectMany(c => c.ArgumentFields)).Where(f => !grouped(f)).Select(f => f.Id);
 
-            var ungrouped = selected.Concat(computed).FirstOrDefault(f => !keys.Contains(select.Field(f)));
+            var ungrouped = selected.Concat(computed).FirstOrDefault(f => !keys.Contains(select.Field(f.LookupId)));
             if (ungrouped != null)
             {
-                var message = string.Format(CultureInfo.CurrentCulture, "The query contains the field '{0}' that is not matched between the select list and group by clause.", ungrouped);
+                var message = string.Format(CultureInfo.CurrentCulture, "The field '{0}' can't be selected because it isn't in the GROUP BY clause.", ungrouped.LookupId);
                 var unknown = GroupByItems.FirstOrDefault(g => !select.Owns(g.Id));
                 if (unknown != null)
                 {
-                    message += string.Format(CultureInfo.CurrentCulture, " {0} in {1} isn't a source or alias of this query.", unknown.Id.Qualifier, unknown.Id.LookupId);
+                    message += string.Format(CultureInfo.CurrentCulture, " {1} can't be read because {0} isn't a source or alias of this query.", unknown.Id.Qualifier, unknown.Id.LookupId);
                 }
 
-                throw new SqlException(message, SqlErrorKind.Semantic);
+                throw new SqlException(message, SqlErrorKind.Semantic, ungrouped.Start, ungrouped.Length);
+            }
+
+            var having = select.HavingClause;
+            var aliases = columns.Where(c => c is AggregateNode || c is ComputedColumn || !string.Equals(c.Id.LocalId, c.ColumnAlias, StringComparison.OrdinalIgnoreCase)).Select(c => c.ColumnAlias).ToList();
+            var filtered = having?.FindDescendants<NodeWithId>()
+                .SelectMany(n => n.Fields)
+                .Where(n => n.EnclosingSelect() == select && select.Owns(n.Id) && !grouped(n) && !n.AncestorsBelow(having).OfType<AggregateNode>().Any())
+                .Select(n => n.Id)
+                .FirstOrDefault(id => !(id.Qualifier.Length == 0 && aliases.Contains(id.LookupId, StringComparer.OrdinalIgnoreCase)) && !keys.Contains(select.Field(id.LookupId)));
+            if (filtered != null)
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The field '{0}' can't be used in HAVING because it isn't in the GROUP BY clause.", filtered.LookupId), SqlErrorKind.Semantic, filtered.Start, filtered.Length);
             }
         }
 
@@ -94,7 +100,20 @@ namespace SqlLinq.SyntaxTree.Clauses
         {
             var select = EnclosingSelect();
 
-            return GroupByItems.Select(g => select.Field(g.Id.LookupId)).ToList();
+            return GroupByItems.Select(g => g.Function == null ? select.Field(g.Id.LookupId) : g.ToSql()).ToList();
+        }
+
+        private static NewExpression NewKey(List<Expression> keys)
+        {
+            var items = keys.Take(7).ToList();
+            if (keys.Count > 7)
+            {
+                items.Add(NewKey(keys.Skip(7).ToList()));
+            }
+
+            var types = items.Select(k => k.Type).ToArray();
+
+            return Expression.New(GetTupleTemplate(types.Length).MakeGenericType(types).GetConstructor(types), items);
         }
 
         private static Type GetTupleTemplate(int typeArgumentCount)
@@ -112,7 +131,7 @@ namespace SqlLinq.SyntaxTree.Clauses
                 case 8: return typeof(Tuple<,,,,,,,>);
             }
 
-            throw new ArgumentException("Expressions greater than 8 fields are not supported.", nameof(typeArgumentCount));
+            throw new ArgumentException("A group key can't have more than 8 fields.", nameof(typeArgumentCount));
         }
     }
 }

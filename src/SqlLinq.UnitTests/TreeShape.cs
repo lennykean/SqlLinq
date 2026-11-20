@@ -96,9 +96,9 @@ namespace SqlLinq.UnitTests
         {
             return error is NewExpression create
                 && create.Type == typeof(SqlException)
-                && create.Arguments.Count == 1
+                && create.Arguments.Count > 0
                 && create.Arguments[0] is ConstantExpression message
-                && Equals(message.Value, "The subquery returned more than one row.");
+                && Equals(message.Value, "The subquery can't be used as a value because it returned more than one row.");
         }
     }
 }

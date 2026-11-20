@@ -24,7 +24,7 @@ namespace SqlLinq.SyntaxTree.Expressions
             }
 
             var results = Subquery(select, sourceData, param, typeof(IDictionary<string, object>));
-            var value = QueryTree.Materialize(select, Expression.Call(typeof(TupleSelectNode), nameof(ScalarValue), null, results));
+            var value = QueryTree.Materialize(select, Expression.Call(typeof(TupleSelectNode), nameof(ScalarValue), null, results, Expression.Constant(Start), Expression.Constant(Length)));
 
             return Expression.Convert(value, ResultType(select, RowType(select, sourceData)));
         }
@@ -66,27 +66,19 @@ namespace SqlLinq.SyntaxTree.Expressions
         {
             if (select.Columns is ColumnsStar || select.Columns.ColumnSources.Count() != 1)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The subquery of {0} must select exactly one column.", keyword), SqlErrorKind.Semantic);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The subquery of {0} can't be used because it doesn't select exactly one column.", keyword), SqlErrorKind.Semantic);
             }
         }
 
         internal static Expression Guard(Expression predicate)
         {
-            if (!UntypedValues.In(predicate))
+            foreach (var row in DereferencedRows.In(predicate))
             {
-                foreach (var row in DereferencedRows.In(predicate))
-                {
-                    predicate = Expression.AndAlso(Expression.NotEqual(row, Expression.Constant(null, row.Type)), predicate);
-                }
-
-                return predicate;
+                var present = Expression.NotEqual(row, Expression.Constant(null, row.Type));
+                predicate = Expression.Condition(present, predicate.Type == typeof(bool?) ? predicate : Expression.Convert(predicate, typeof(bool?)), Expression.Constant(null, typeof(bool?)));
             }
 
-            return Expression.TryCatch(
-                predicate,
-                Expression.Catch(typeof(SqlException), Expression.Rethrow(typeof(bool))),
-                Expression.Catch(typeof(OperationCanceledException), Expression.Rethrow(typeof(bool))),
-                Expression.Catch(typeof(Exception), Expression.Constant(false)));
+            return predicate;
         }
 
         private static Expression Subquery(SelectNode select, ParameterExpression sourceData, ParameterExpression param, Type resultType)
@@ -98,7 +90,7 @@ namespace SqlLinq.SyntaxTree.Expressions
             return QueryTree.Build(select, rows, rowType, resultType);
         }
 
-        private static Expression Single(Expression results)
+        private Expression Single(Expression results)
         {
             var element = QueryTree.ElementOf(results.Type);
             var value = element.IsValueType && Nullable.GetUnderlyingType(element) == null ? typeof(Nullable<>).MakeGenericType(element) : element;
@@ -112,7 +104,7 @@ namespace SqlLinq.SyntaxTree.Expressions
             return QueryTree.Bind(found, rows =>
             {
                 var first = value == element ? rows : QueryTree.Select(rows, element, value, row => Expression.Convert(row, value));
-                var error = Expression.New(typeof(SqlException).GetConstructor(new[] { typeof(string) }), Expression.Constant("The subquery returned more than one row."));
+                var error = Expression.New(typeof(SqlException).GetConstructor(new[] { typeof(string), typeof(SqlErrorKind), typeof(int), typeof(int) }), Expression.Constant("The subquery can't be used as a value because it returned more than one row."), Expression.Constant(SqlErrorKind.Evaluation), Expression.Constant(Start), Expression.Constant(Length));
 
                 return Expression.Condition(
                     Expression.GreaterThan(Expression.Call(typeof(Enumerable), nameof(Enumerable.Count), new[] { element }, rows), Expression.Constant(1)),
@@ -126,12 +118,12 @@ namespace SqlLinq.SyntaxTree.Expressions
             return select.Source == null ? sourceData.Type.GetGenericArguments()[0] : SourcesExtensions.ElementType(select.Source);
         }
 
-        private static object ScalarValue(IEnumerable<IDictionary<string, object>> results)
+        private static object ScalarValue(IEnumerable<IDictionary<string, object>> results, int start, int length)
         {
             var rows = results.Take(2).ToList();
             if (rows.Count > 1)
             {
-                throw new SqlException("The subquery returned more than one row.", SqlErrorKind.Evaluation);
+                throw new SqlException("The subquery can't be used as a value because it returned more than one row.", SqlErrorKind.Evaluation, start, length);
             }
 
             return rows.Count == 0 ? null : rows[0].Values.First();

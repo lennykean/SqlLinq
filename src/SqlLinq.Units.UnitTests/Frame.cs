@@ -18,6 +18,9 @@ namespace SqlLinq.Units.UnitTests
         [Quantity(RotationalSpeedUnit.RevolutionPerMinute)]
         public int DriveSpin { get; set; }
 
+        [Quantity(LengthUnit.Meter)]
+        public double Range { get; set; }
+
         public double Scan { get; set; }
     }
 }

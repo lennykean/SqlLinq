@@ -48,14 +48,14 @@ namespace SqlLinq.TimeSeries
             var m = Duration.Match(text);
             if (!m.Success)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} {1} isn't a duration, e.g. {0} 30 seconds or {0} 500 ms.", clause, text), SqlErrorKind.Syntax, start, start < 0 ? 0 : text.Length);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} {1} can't be used because it isn't a duration.", clause, text), SqlErrorKind.Syntax, start, start < 0 ? 0 : text.Length);
             }
 
             var value = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
             var seconds = value * (m.Groups[2].Success ? 0.001 : m.Groups[3].Success ? 60 : m.Groups[4].Success ? 3600 : 1);
             if (!(seconds < TimeSpan.MaxValue.TotalSeconds))
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} {1} is too long a duration.", clause, text), SqlErrorKind.Semantic, start, start < 0 ? 0 : text.Length);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} {1} can't be used because it's too long a duration.", clause, text), SqlErrorKind.Semantic, start, start < 0 ? 0 : text.Length);
             }
 
             TimeSpan offset;
@@ -80,12 +80,12 @@ namespace SqlLinq.TimeSeries
             var bound = new Bound { Offset = offset, Ago = m.Groups[5].Success };
             if ((bound.Ago || offset <= TimeSpan.Zero) && clause.Equals("TIMESERIES", StringComparison.OrdinalIgnoreCase))
             {
-                throw new SqlException("TIMESERIES needs a positive duration, e.g. TIMESERIES 1 second.", SqlErrorKind.Semantic, start, start < 0 ? 0 : text.Length);
+                throw new SqlException("TIMESERIES " + text + " can't be used because it isn't a positive duration.", SqlErrorKind.Semantic, start, start < 0 ? 0 : text.Length);
             }
 
             if ((bound.Ago || offset <= TimeSpan.Zero) && clause.Equals("SESSION", StringComparison.OrdinalIgnoreCase))
             {
-                throw new SqlException("SESSION needs a positive gap, e.g. SESSION 1 second.", SqlErrorKind.Semantic, start, start < 0 ? 0 : text.Length);
+                throw new SqlException("SESSION " + text + " can't be used because it isn't a positive gap.", SqlErrorKind.Semantic, start, start < 0 ? 0 : text.Length);
             }
 
             return bound;

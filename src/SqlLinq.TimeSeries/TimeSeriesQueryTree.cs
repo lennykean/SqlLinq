@@ -18,6 +18,7 @@ namespace SqlLinq.TimeSeries
         private static readonly Type ResultType = typeof(IDictionary<string, object>);
         private static readonly Type ResultsType = typeof(IList<IDictionary<string, object>>);
         private static readonly Type WindowType = typeof(Func<TimeSpan, TimeSpan, string, List<IDictionary<string, object>>>);
+        private const int MaxBuckets = 1000000;
 
         private readonly ParameterExpression _source = Expression.Parameter(typeof(IEnumerable<T>), "source");
         private readonly ParameterExpression _time = Expression.Parameter(typeof(Func<T, TimeSpan>), "time");
@@ -32,6 +33,7 @@ namespace SqlLinq.TimeSeries
         private readonly Bound _until;
         private readonly TimeSpan? _compare;
         private readonly long? _bucketTicks;
+        private readonly TimeSeriesClause _buckets;
         private readonly TimeSpan? _gap;
         private readonly int? _limit;
 
@@ -43,11 +45,11 @@ namespace SqlLinq.TimeSeries
             foreach (var facet in syntax.Facets)
             {
                 Throw(facet.Error);
-                _facets.Add((facet.Name, FacetExpression.Lambda<T>(facet)));
+                _facets.Add((facet.Name, Placed(() => FacetExpression.Lambda<T>(facet), facet.Start, facet.Text.Length)));
                 _items.Add(new TimeSeriesColumn(facet.Name, TimeSeriesColumnKind.Facet, facet));
             }
 
-            var factory = new AggregateFactory<T>(argument => SqlExpression.Lambda<T>(argument.Expression));
+            var factory = new AggregateFactory<T>(argument => Placed(() => SqlExpression.Lambda<T>(argument.Expression), argument.Start, argument.Length));
             foreach (var column in syntax.Select)
             {
                 Throw(column.Error);
@@ -57,7 +59,7 @@ namespace SqlLinq.TimeSeries
             Throw(syntax.WhereError);
             if (syntax.Where != null)
             {
-                _where = SqlExpression.Lambda<T>(syntax.Where);
+                _where = Placed(() => SqlExpression.Lambda<T>(syntax.Where), syntax.Where.Start, syntax.Where.Length);
             }
 
             Throw(syntax.ClauseError);
@@ -66,6 +68,7 @@ namespace SqlLinq.TimeSeries
             _until = syntax.Until;
             _compare = syntax.Compare;
             _bucketTicks = syntax.TimeSeries?.Ticks;
+            _buckets = syntax.Clauses.FirstOrDefault(c => c.Keyword == "TIMESERIES");
             _gap = syntax.Session;
             _limit = syntax.Limit;
             Tree = Query();
@@ -96,14 +99,12 @@ namespace SqlLinq.TimeSeries
 
         internal static Expression IsTrue(Expression value)
         {
-            if (value is UnaryExpression boxed && boxed.NodeType == ExpressionType.Convert && boxed.Operand.Type == typeof(bool))
+            if (value is UnaryExpression boxed && boxed.NodeType == ExpressionType.Convert && (boxed.Operand.Type == typeof(bool) || boxed.Operand.Type == typeof(bool?)))
             {
-                return boxed.Operand;
+                return boxed.Operand.Type == typeof(bool) ? boxed.Operand : Expression.Equal(boxed.Operand, Expression.Constant(true, typeof(bool?)));
             }
 
-            var result = Expression.Variable(typeof(object), "result");
-
-            return Expression.Block(new[] { result }, Expression.Assign(result, value), Expression.AndAlso(Expression.TypeIs(result, typeof(bool)), Expression.Unbox(result, typeof(bool))));
+            return Expression.Call(typeof(Convert), nameof(Convert.ToBoolean), null, value);
         }
 
         private static void Throw(SqlException error)
@@ -111,6 +112,18 @@ namespace SqlLinq.TimeSeries
             if (error != null)
             {
                 throw error;
+            }
+        }
+
+        private static TResult Placed<TResult>(Func<TResult> compile, int start, int length)
+        {
+            try
+            {
+                return compile();
+            }
+            catch (SqlException e) when (e.Start < 0)
+            {
+                throw new SqlException(e.Message, e.InnerException, e.Kind, start, length);
             }
         }
 
@@ -123,7 +136,7 @@ namespace SqlLinq.TimeSeries
         {
             if (!syntax.Aggregated)
             {
-                _columns.Add((column.Name, SqlExpression.Lambda<T>(column.Expression)));
+                _columns.Add((column.Name, Placed(() => SqlExpression.Lambda<T>(column.Expression), column.Start, column.Text.Length)));
                 _items.Add(new TimeSeriesColumn(column.Name, TimeSeriesColumnKind.Select, column));
                 return;
             }
@@ -168,7 +181,7 @@ namespace SqlLinq.TimeSeries
                     Expression.Invoke(window, Expression.Subtract(from, Expression.Constant(_compare.Value)), Expression.Subtract(to, Expression.Constant(_compare.Value)), Expression.Constant("previous"))));
             var query = Expression.Block(
                 new[] { end, from, to, window },
-                Expression.Assign(end, Expression.Add(Linq(nameof(Enumerable.Max), new[] { RowType, typeof(TimeSpan) }, _all, Times()), Expression.Constant(TimeSpan.FromTicks(1)))),
+                Expression.Assign(end, Linq(nameof(Enumerable.Max), new[] { RowType, typeof(TimeSpan) }, _all, Times())),
                 Expression.Assign(from, _since == null ? Linq(nameof(Enumerable.Min), new[] { RowType, typeof(TimeSpan) }, _all, Times()) : Resolve(_since, end)),
                 Expression.Assign(to, _until == null ? end : Resolve(_until, end)),
                 Expression.Assign(window, Window()),
@@ -196,7 +209,9 @@ namespace SqlLinq.TimeSeries
             var comparison = Expression.Parameter(typeof(string), "comparison");
             var rows = Expression.Variable(RowsType, "rows");
             var row = Expression.Parameter(RowType, "row");
-            Expression inWindow = Linq(nameof(Enumerable.Where), RowType, _all, Expression.Lambda(Expression.AndAlso(Expression.GreaterThanOrEqual(Time(row), from), Expression.LessThan(Time(row), to)), row));
+            var after = _since?.Ago == true ? Expression.GreaterThan(Time(row), from) : Expression.GreaterThanOrEqual(Time(row), from);
+            var before = _until == null || _until.Ago ? Expression.LessThanOrEqual(Time(row), to) : Expression.LessThan(Time(row), to);
+            Expression inWindow = Linq(nameof(Enumerable.Where), RowType, _all, Expression.Lambda(Expression.AndAlso(after, before), row));
             if (_where != null)
             {
                 var kept = Expression.Parameter(RowType, "row");
@@ -266,17 +281,22 @@ namespace SqlLinq.TimeSeries
             else
             {
                 var ticks = _bucketTicks.Value;
+                var first = _since?.Ago == true ? 1L : 0L;
                 var lookups = Expression.Variable(typeof(List<ILookup<long, (TimeSpan Time, T Item)>>), "lookups");
                 var lookup = Expression.Parameter(LookupType, "lookup");
                 var row = Expression.Parameter(RowType, "row");
-                var bucket = Expression.Parameter(typeof(long), "bucket");
-                var indexed = Expression.Lambda(Linq(nameof(Enumerable.ToLookup), new[] { RowType, typeof(long) }, Expression.Field(group, "Item2"), Expression.Lambda(Index(Time(row), ticks), row)), group);
-                var cell = Expression.Lambda(Summary(Expression.Field(group, "Item1"), Expression.Property(lookup, "Item", bucket), Expression.Constant(TimeSpan.FromTicks(ticks)), comparison, Expression.Multiply(bucket, Expression.Constant(ticks))), group, lookup);
+                var bucket = Expression.Parameter(typeof(int), "bucket");
+                var index = Expression.Convert(bucket, typeof(long));
+                var indexed = Expression.Lambda(Linq(nameof(Enumerable.ToLookup), new[] { RowType, typeof(long) }, Expression.Field(group, "Item2"), Expression.Lambda(Index(Expression.Subtract(Expression.Subtract(Time(row), from), Expression.Constant(TimeSpan.FromTicks(first))), ticks), row)), group);
+                var cell = Expression.Lambda(Summary(Expression.Field(group, "Item1"), Expression.Property(lookup, "Item", index), Expression.Constant(TimeSpan.FromTicks(ticks)), comparison, Expression.Add(Expression.Property(from, nameof(TimeSpan.Ticks)), Expression.Multiply(index, Expression.Constant(ticks)))), group, lookup);
                 var cells = Expression.Lambda(Expression.Block(Checked(), Linq(nameof(Enumerable.Zip), new[] { GroupType, LookupType, ResultType }, groups, lookups, cell)), bucket);
-                var buckets = Expression.Call(typeof(Values), nameof(Values.Buckets), null, Index(from, ticks), Index(Expression.Subtract(to, Expression.Constant(TimeSpan.FromTicks(1))), ticks));
+                var last = Index(Expression.Subtract(window, Expression.Constant(TimeSpan.FromTicks(first + (_until == null || _until.Ago ? 0 : 1)))), ticks);
+                var error = Expression.New(typeof(SqlException).GetConstructor(new[] { typeof(string), typeof(SqlErrorKind), typeof(int), typeof(int) }), Expression.Constant(string.Format(CultureInfo.CurrentCulture, "TIMESERIES {0} can't be used because it splits the window into more than {1} buckets.", _buckets.Text, MaxBuckets)), Expression.Constant(SqlErrorKind.Evaluation), Expression.Constant(_buckets.Start), Expression.Constant(_buckets.Text.Length));
+                var count = Expression.Condition(Expression.LessThan(last, Expression.Constant(0L)), Expression.Constant(0), Expression.Condition(Expression.LessThan(last, Expression.Constant((long)MaxBuckets)), Expression.Convert(Expression.Increment(last), typeof(int)), Expression.Throw(error, typeof(int))));
+                var buckets = Expression.Call(typeof(Enumerable), nameof(Enumerable.Range), null, Expression.Constant(0), count);
                 variables.Add(lookups);
                 steps.Add(Expression.Assign(lookups, Linq(nameof(Enumerable.ToList), LookupType, Linq(nameof(Enumerable.Select), new[] { GroupType, LookupType }, groups, indexed))));
-                results = Linq(nameof(Enumerable.SelectMany), new[] { typeof(long), ResultType }, buckets, cells);
+                results = Linq(nameof(Enumerable.SelectMany), new[] { typeof(int), ResultType }, buckets, cells);
             }
 
             steps.Add(Linq(nameof(Enumerable.ToList), ResultType, results));

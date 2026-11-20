@@ -29,7 +29,6 @@ namespace SqlLinq.UnitTests
         [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = s.Id", AllPostings)]
         [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c INNER JOIN ships s ON s.Id = c.ShipId", AllPostings)]
         [DataRow("SELECT crew.Name, ships.Name AS Ship FROM crew INNER JOIN ships ON crew.ShipId = ships.Id", AllPostings)]
-        [DataRow("SELECT Name, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = s.Id", AllPostings)]
         [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c LEFT JOIN ships s ON c.ShipId = s.Id", AllPostings + "; Isaac/")]
         [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c RIGHT JOIN ships s ON c.ShipId = s.Id", AllPostings + "; /Pembroke")]
         [DataRow("SELECT c.Name, k.Role FROM crew c JOIN ships s ON c.ShipId = s.Id JOIN classes k ON s.Class = k.Class WHERE c.Rank > 3", "Ed Mercer/Exploration; Kelly Grayson/Exploration")]
@@ -64,8 +63,8 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT * FROM crew c JOIN nowhere n ON c.ShipId = n.Id", "'nowhere' isn't one of the sources")]
-        [DataRow("SELECT * FROM crew c JOIN ships s ON c.ShipId = c.Rank", "must compare a field of the joined source with a field of an earlier source")]
+        [DataRow("SELECT * FROM crew c JOIN nowhere n ON c.ShipId = n.Id", "'nowhere' can't be read because it isn't one of the sources")]
+        [DataRow("SELECT * FROM crew c JOIN ships s ON c.ShipId = c.Rank", "doesn't compare a field of the joined source with a field of an earlier source")]
         [DataRow("SELECT * FROM crew c JOIN ships c ON c.ShipId = c.Id", "joined more than once")]
         public void TablesReportMistakesAsSqlException(string sql, string message)
         {
@@ -94,7 +93,7 @@ namespace SqlLinq.UnitTests
         public void ThisAndThatBehaveLikeTheJoinQuery()
         {
             // Arrange
-            const string Sql = "SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id";
+            const string Sql = "SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id";
             var tables = new Dictionary<string, IEnumerable> { ["this"] = Orville.Crew(), ["that"] = Orville.Ships() };
 
             // Act

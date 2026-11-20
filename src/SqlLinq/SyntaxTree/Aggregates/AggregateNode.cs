@@ -135,6 +135,28 @@ namespace SqlLinq.SyntaxTree.Aggregates
                 return ordered;
             }
 
+            var element = values.Type.GetGenericArguments()[0];
+            var underlying = Nullable.GetUnderlyingType(element) ?? element;
+            var code = Type.GetTypeCode(underlying);
+            if (element != typeof(object))
+            {
+                if (underlying.IsEnum || code < TypeCode.SByte || code > TypeCode.Decimal)
+                {
+                    throw new SqlException("Arithmetic can't use " + underlying.Name + " values because they aren't numbers.", SqlErrorKind.Semantic, Start, Length);
+                }
+
+                var promoted = code <= TypeCode.UInt16 ? typeof(int) : code <= TypeCode.UInt64 ? typeof(long) : null;
+                var wide = promoted == null || element == underlying ? promoted : typeof(Nullable<>).MakeGenericType(promoted);
+                method = wide == null ? null : EvaluatatorType.GetMethod(Name, new[] { typeof(IEnumerable<>).MakeGenericType(wide) });
+                if (method != null)
+                {
+                    var value = Expression.Parameter(element, "value");
+                    var widened = Expression.Call(typeof(Enumerable), nameof(Enumerable.Select), new[] { element, wide }, values, Expression.Lambda(Expression.ConvertChecked(value, wide), value));
+
+                    return Expression.Call(method, widened);
+                }
+            }
+
             var boxed = Expression.Call(typeof(Enumerable), nameof(Enumerable.Cast), new[] { typeof(object) }, values);
 
             return Expression.Call(Expression.Constant(this), typeof(AggregateNode).GetMethod(nameof(AggregateValues), BindingFlags.Instance | BindingFlags.NonPublic), boxed);
@@ -167,7 +189,7 @@ namespace SqlLinq.SyntaxTree.Aggregates
 
             if (type != typeof(string))
             {
-                return Expression.Call(typeof(Enumerable), extreme, new[] { type }, values);
+                return Expression.Call(typeof(Enumerable), extreme, new[] { values.Type.GetGenericArguments()[0] }, values);
             }
 
             var value = Expression.Parameter(type, "value");

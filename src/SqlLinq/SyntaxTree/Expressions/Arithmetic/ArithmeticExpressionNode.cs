@@ -17,7 +17,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Arithmetic
 
             if (left.Type != typeof(object) && right.Type != typeof(object))
             {
-                return CreateBinaryExpression(Lifted(left, right.Type), Lifted(right, left.Type));
+                return Compiled(() => CreateBinaryExpression(Lifted(left, right.Type), Lifted(right, left.Type)));
             }
 
             var boxedLeft = Expression.Variable(typeof(object), "left");
@@ -111,7 +111,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Arithmetic
             var code = Type.GetTypeCode(value.GetType());
             if (value is Enum || code < TypeCode.SByte || code > TypeCode.Decimal)
             {
-                throw new SqlException("Arithmetic requires numeric operands; received " + value.GetType().Name + ".", SqlErrorKind.Evaluation);
+                throw new SqlException("Arithmetic can't use " + value.GetType().Name + " values because they aren't numbers.", SqlErrorKind.Evaluation);
             }
 
             return Convert.ToDouble(value, CultureInfo.InvariantCulture);

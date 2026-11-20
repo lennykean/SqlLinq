@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Linq.Expressions;
-using System.Diagnostics;
 
 namespace SqlLinq.SyntaxTree.Expressions
 {
@@ -12,16 +11,18 @@ namespace SqlLinq.SyntaxTree.Expressions
 
         internal override Expression CreateExpression(ParameterExpression sourceData, ParameterExpression param)
         {
-            return CreateBinaryExpression(CreateChildExpression(sourceData, param, 0), CreateChildExpression(sourceData, param, 2));
+            var left = CreateChildExpression(sourceData, param, 0);
+            var right = CreateChildExpression(sourceData, param, 2);
+
+            return Compiled(() => CreateBinaryExpression(Operand(left), Operand(right)));
         }
 
         protected Expression CreateBinaryExpression(Expression left, Expression right)
         {
             Type widest = right.Type.Widest(left.Type);
-            Debug.Assert(widest != null);
             if (Lifts)
             {
-                widest = widest.Lifted(left.Type, right.Type);
+                widest = widest?.Lifted(left.Type, right.Type);
             }
 
             if (right.Type != widest)
@@ -45,6 +46,11 @@ namespace SqlLinq.SyntaxTree.Expressions
             {
                 return false;
             }
+        }
+
+        internal virtual Expression Operand(Expression operand)
+        {
+            return operand;
         }
 
         protected virtual Expression WrapReturnExpression(Expression body)

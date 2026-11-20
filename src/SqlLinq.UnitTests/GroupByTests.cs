@@ -1,9 +1,8 @@
 ﻿using System;
-using System.Text;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using LinqStatistics;
 
 namespace SqlLinq.UnitTests
 {
@@ -143,6 +142,26 @@ namespace SqlLinq.UnitTests
                          };
 
             Assert.IsTrue(answer.SequenceEqual(result, new DictionaryComparer<string, object>()));
+        }
+
+        [TestMethod]
+        public void GroupByMoreThanEightFields()
+        {
+            // Arrange
+            var tables = new Dictionary<string, IEnumerable>
+            {
+                ["this"] = new[]
+                {
+                    new { A = 1, B = 2, C = 3, D = 4, E = 5, F = 6, G = 7, H = 8, I = 9 },
+                    new { A = 1, B = 2, C = 3, D = 4, E = 5, F = 6, G = 7, H = 8, I = 10 },
+                },
+            };
+
+            // Act
+            var result = tables.Query<int>("SELECT COUNT(*) FROM this GROUP BY A, B, C, D, E, F, G, H, I");
+
+            // Assert
+            Assert.AreEqual("1, 1", string.Join(", ", result));
         }
 
         [TestMethod]

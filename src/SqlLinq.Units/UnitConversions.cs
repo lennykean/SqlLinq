@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using SqlLinq.SyntaxTree;
 using SqlLinq.SyntaxTree.Expressions;
 using UnitsNet;
 using UnitsNet.Metadata;
@@ -13,7 +14,7 @@ namespace SqlLinq.Units
     public sealed class UnitConversions : ISqlFunction
     {
         private static readonly CultureInfo English = CultureInfo.GetCultureInfo("en-US");
-        private static readonly MethodInfo ApplyMethod = typeof(UnitConversions).GetMethod(nameof(Apply), BindingFlags.NonPublic | BindingFlags.Static);
+        private static readonly MethodInfo ApplyMethod = new Func<object, Func<double, double>, string, double?>(Apply).Method;
 
         private readonly List<QuantityMetadata> _metadata;
 
@@ -27,8 +28,21 @@ namespace SqlLinq.Units
         public Expression Compile(IReadOnlyList<SqlArgument> arguments)
         {
             var texts = arguments.Select(a => a.Text).ToList();
-            var convert = Conversion(texts);
+            var argument = arguments.Count > 0 ? arguments[0].Expression : null;
+            var value = argument is UnaryExpression boxed && boxed.NodeType == ExpressionType.Convert ? boxed.Operand : argument;
+            var convert = Conversion(texts, (value as MemberExpression)?.Member.DeclaringType);
             var call = string.Join(", ", texts);
+            var type = Nullable.GetUnderlyingType(value.Type) ?? value.Type;
+            var code = Type.GetTypeCode(type);
+            if (type != typeof(object) && !type.IsAbstract && (code < TypeCode.SByte || code > TypeCode.Decimal))
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "convert({0}) can't read {1} values because they aren't numbers.", call, type.Name), SqlErrorKind.Semantic);
+            }
+
+            if (type != typeof(object) && !type.IsAbstract && !type.IsEnum)
+            {
+                return Expression.Call(new Func<double?, Func<double, double>, string, double?>(Apply).Method, Expression.Convert(value, typeof(double?)), Expression.Constant(convert), Expression.Constant(call));
+            }
 
             return Expression.Convert(Expression.Call(ApplyMethod, Expression.Convert(arguments[0].Expression, typeof(object)), Expression.Constant(convert), Expression.Constant(call)), typeof(object));
         }
@@ -46,7 +60,15 @@ namespace SqlLinq.Units
         private ExpressionNode Rewrite(NodeWithId call)
         {
             var args = call.Arguments.Select(a => a.Text).ToList();
-            var convert = Conversion(args);
+            Func<double, double> convert;
+            try
+            {
+                convert = Conversion(args, null);
+            }
+            catch (SqlException e) when (e.Start < 0)
+            {
+                throw new SqlException(e.Message, e.InnerException, e.Kind, call.Start, call.Length);
+            }
 
             var offset = 0d;
             var scale = 0d;
@@ -74,16 +96,17 @@ namespace SqlLinq.Units
             return (ExpressionNode)template.Replace(n => n is NodeWithId id && id.Function == null && id.Id.LookupId == "value" ? value : null);
         }
 
-        private Func<double, double> Conversion(List<string> args)
+        private Func<double, double> Conversion(List<string> args, Type owner)
         {
             if (args.Count != 2 && args.Count != 3)
             {
-                throw new SqlException("convert takes (column, 'to unit') or (value, 'Kind.from unit', 'to unit').", SqlErrorKind.Semantic);
+                throw new SqlException("convert can't run because it takes 2 or 3 arguments, not " + args.Count + ".", SqlErrorKind.Semantic);
             }
 
             var fromText = args.Count == 3 ? SqlSyntax.Unquote(args[1]) : null;
             var toText = SqlSyntax.Unquote(args[args.Count - 1]);
-            var column = _metadata.FirstOrDefault(m => m.Property.Name.Equals(SqlSyntax.Unbracket(args[0]), StringComparison.OrdinalIgnoreCase));
+            var name = SqlSyntax.Tokenize(args[0]).Count == 1 ? SqlSyntax.Unbracket(new Identifier(SqlSyntax.Unbracket(args[0])).LocalId) : args[0];
+            var column = _metadata.FirstOrDefault(m => m.Property.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && (owner == null || m.Property.DeclaringType.IsAssignableFrom(owner) || owner.IsAssignableFrom(m.Property.DeclaringType)));
 
             return column != null
                 ? ColumnConversion(column, fromText, toText)
@@ -103,13 +126,24 @@ namespace SqlLinq.Units
                 throw new SqlException(string.Format(CultureInfo.CurrentCulture, "convert({0}) can't read '{1}', which isn't a number.", call, value), SqlErrorKind.Evaluation);
             }
 
+            return Apply(Convert.ToDouble(value, CultureInfo.InvariantCulture), convert, call);
+        }
+
+        private static double? Apply(double? value, Func<double, double> convert, string call)
+        {
+            if (value == null)
+            {
+                return null;
+            }
+
             try
             {
-                return convert(Convert.ToDouble(value, CultureInfo.InvariantCulture));
+                var number = value.Value;
+                return double.IsFinite(number) ? convert(number) : number;
             }
-            catch (ArithmeticException e)
+            catch (Exception e) when (e is ArithmeticException || e is ArgumentException)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "convert({0}) overflowed converting {1}.", call, value), e, SqlErrorKind.Evaluation);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "convert({0}) can't convert {1} because the result is out of range.", call, value), e, SqlErrorKind.Evaluation);
             }
         }
 
@@ -117,9 +151,9 @@ namespace SqlLinq.Units
         {
             var unit = column.Unit;
 
-            if (fromText != null && !Equals(Choice(column, fromText), unit.UnitInfo.Value))
+            if (fromText != null && !Equals(Unit(column, fromText), unit.UnitInfo.Value))
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} is in {1}, not {2}.", column.Property.Name, unit.Name, fromText), SqlErrorKind.Semantic);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} can't be converted from {2} because it's in {1}.", column.Property.Name, unit.Name, fromText), SqlErrorKind.Semantic);
             }
 
             var to = Choice(column, toText);
@@ -137,17 +171,28 @@ namespace SqlLinq.Units
 
         private static Enum Choice(QuantityMetadata column, string text)
         {
+            var choices = UnitChoices.For(column);
             var kind = column.Unit.QuantityType.QuantityInfo.Name + ".";
-            var unit = Resolve(column, text) ?? (text.StartsWith(kind, StringComparison.OrdinalIgnoreCase) ? Resolve(column, text[kind.Length..]) : null);
+            var symbol = text.StartsWith(kind, StringComparison.OrdinalIgnoreCase) ? text[kind.Length..] : text;
+            var shared = choices.Where(c => c.Symbol == symbol).Select(c => "'" + c.Name + "'").ToList();
 
-            return unit ?? throw new SqlException(
-                string.Format(
-                    CultureInfo.CurrentCulture,
-                    "{0} ({1}) can't convert to '{2}'. Its units are {3}.",
-                    column.Property.Name,
-                    column.Unit.Name,
-                    text,
-                    string.Join(", ", UnitChoices.For(column).Select(c => c.Symbol.Length > 0 ? c.Symbol : c.Name))), SqlErrorKind.UnknownName);
+            return Unit(column, text) ?? throw new SqlException(
+                shared.Count > 1
+                    ? string.Format(CultureInfo.CurrentCulture, "'{0}' can't be resolved for {1} ({2}) because it could be {3}.", text, column.Property.Name, column.Unit.Name, string.Join(" or ", shared))
+                    : string.Format(
+                        CultureInfo.CurrentCulture,
+                        "{0} ({1}) can't convert to '{2}'. Its units are {3}.",
+                        column.Property.Name,
+                        column.Unit.Name,
+                        text,
+                        string.Join(", ", choices.Select(c => c.Symbol.Length > 0 && choices.Count(o => o.Symbol == c.Symbol) == 1 ? c.Symbol : c.Name))), SqlErrorKind.UnknownName);
+        }
+
+        private static Enum Unit(QuantityMetadata column, string text)
+        {
+            var kind = column.Unit.QuantityType.QuantityInfo.Name + ".";
+
+            return Resolve(column, text) ?? (text.StartsWith(kind, StringComparison.OrdinalIgnoreCase) ? Resolve(column, text[kind.Length..]) : null);
         }
 
         private static Enum Resolve(QuantityMetadata column, string text)
@@ -158,7 +203,9 @@ namespace SqlLinq.Units
             }
             catch (ArgumentException)
             {
-                return null;
+                var unit = Find(text, column.Unit.QuantityType.QuantityInfo);
+
+                return column.Conversions.Select(c => c.UnitInfo.Value).Append(column.Unit.UnitInfo.Value).Contains(unit) ? unit : null;
             }
         }
 
@@ -166,7 +213,7 @@ namespace SqlLinq.Units
         {
             if (fromText == null)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "convert({0}, '{1}') needs a column with unit metadata. Otherwise name the from unit and its kind, e.g. convert({0}, 'Pressure.kPa', '{1}').", value, toText), SqlErrorKind.Semantic);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} can't be converted without unit metadata or a from unit.", value), SqlErrorKind.Semantic);
             }
 
             if (!SplitKind(fromText, out var kind, out var fromUnit))
@@ -175,23 +222,23 @@ namespace SqlLinq.Units
 
                 throw new SqlException(
                     kinds.Count == 0
-                        ? string.Format(CultureInfo.CurrentCulture, "'{0}' isn't a unit of any kind.", fromText)
-                        : string.Format(CultureInfo.CurrentCulture, "{0} has no unit metadata, so name the kind of '{1}': {2}.", value, fromText, string.Join(" or ", kinds)), kinds.Count == 0 ? SqlErrorKind.UnknownName : SqlErrorKind.Semantic);
+                        ? string.Format(CultureInfo.CurrentCulture, "'{0}' can't be converted because it names no unit or more than one.", fromText)
+                        : string.Format(CultureInfo.CurrentCulture, "{0} has no unit metadata, so '{1}' can't be converted without its kind: {2}.", value, fromText, string.Join(" or ", kinds)), kinds.Count == 0 ? SqlErrorKind.UnknownName : SqlErrorKind.Semantic);
             }
 
-            var from = Find(fromUnit, kind) ?? throw new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' isn't a {1} unit.", fromUnit, kind.Name), SqlErrorKind.UnknownName);
+            var from = Find(fromUnit, kind) ?? throw new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' can't be used because it names no {1} unit or more than one.", fromUnit, kind.Name), SqlErrorKind.UnknownName);
             var toUnit = toText;
 
             if (SplitKind(toText, out var toKind, out var unqualified))
             {
                 if (toKind != kind)
                 {
-                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' is {1}, not {2}.", fromText, kind.Name, toKind.Name), SqlErrorKind.Semantic);
+                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' can't be converted to {2} because it's {1}.", fromText, kind.Name, toKind.Name), SqlErrorKind.Semantic);
                 }
                 toUnit = unqualified;
             }
 
-            var to = Find(toUnit, kind) ?? throw new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' isn't a {1} unit.", toText, kind.Name), SqlErrorKind.UnknownName);
+            var to = Find(toUnit, kind) ?? throw new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' can't be used because it names no {1} unit or more than one.", toText, kind.Name), SqlErrorKind.UnknownName);
 
             return x => UnitConverter.Convert(x, from, to);
         }
@@ -208,16 +255,7 @@ namespace SqlLinq.Units
 
         private static Enum Find(string text, QuantityInfo kind)
         {
-            foreach (var unit in kind.UnitInfos)
-            {
-                if (unit.Name.Equals(text, StringComparison.OrdinalIgnoreCase)
-                    || UnitAbbreviationsCache.Default.GetUnitAbbreviations(kind.UnitType, Convert.ToInt32(unit.Value, CultureInfo.InvariantCulture), English).Contains(text))
-                {
-                    return unit.Value;
-                }
-            }
-
-            return null;
+            return kind.UnitInfos.FirstOrDefault(u => u.Name.Equals(text, StringComparison.OrdinalIgnoreCase))?.Value ?? (UnitParser.Default.TryParse(text, kind.UnitType, English, out Enum unit) ? unit : null);
         }
 
         private static string Literal(double value)

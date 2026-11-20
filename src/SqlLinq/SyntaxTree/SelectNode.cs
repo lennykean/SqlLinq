@@ -65,7 +65,7 @@ namespace SqlLinq.SyntaxTree
         {
             var id = new Identifier(lookupId);
 
-            return !Joined && Names.Contains(id.Qualifier) ? id.LocalId : lookupId;
+            return Layout != null ? Layout.Field(id) : !Joined && Names.Contains(id.Qualifier) ? id.LocalId : lookupId;
         }
 
         internal static Expression CreateFieldSelector(SelectNode scope, Identifier id, ParameterExpression row)
@@ -77,7 +77,7 @@ namespace SqlLinq.SyntaxTree
                 {
                     if (id.Qualifier.Length == 0 || string.Equals(id.Qualifier, "this", StringComparison.OrdinalIgnoreCase))
                     {
-                        return ExpressionFactory.CreateFieldSelector(source, id.Qualifier.Length == 0 ? id.LookupId : id.LocalId);
+                        return ExpressionFactory.CreateFieldSelector(source, id.Qualifier.Length == 0 ? id.LookupId : id.LocalId, id);
                     }
 
                     break;
@@ -85,7 +85,7 @@ namespace SqlLinq.SyntaxTree
 
                 if (level.Owns(id))
                 {
-                    return level.Layout == null ? ExpressionFactory.CreateFieldSelector(source, level.Field(id.LookupId)) : level.Layout.Read(source, id);
+                    return level.Layout == null ? ExpressionFactory.CreateFieldSelector(source, level.Field(id.LookupId), id) : level.Layout.Read(source, id);
                 }
 
                 source = level.OuterRow;
@@ -103,7 +103,7 @@ namespace SqlLinq.SyntaxTree
                 return Expression.Call(typeof(SelectNode), nameof(DottedKey), new[] { valueType }, Expression.Convert(row, typeof(object)), Expression.Constant(id));
             }
 
-            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query.", id.Qualifier, id.LookupId), SqlErrorKind.UnknownName);
+            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{1} can't be read because {0} isn't a source or alias of this query.", id.Qualifier, id.LookupId), SqlErrorKind.UnknownName, id.Start, id.Length);
         }
 
         private static TValue DottedKey<TValue>(object row, Identifier id)
@@ -122,7 +122,7 @@ namespace SqlLinq.SyntaxTree
                 }
             }
 
-            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query, or a field of the row.", id.Qualifier, id.LookupId), SqlErrorKind.UnknownName);
+            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{1} can't be read because {0} isn't a source or alias of this query, or a field of the row.", id.Qualifier, id.LookupId), SqlErrorKind.UnknownName, id.Start, id.Length);
         }
 
         public Columns Columns
@@ -177,15 +177,15 @@ namespace SqlLinq.SyntaxTree
         internal override void CheckSyntax()
         {
             if (GroupByClause == null && Columns.Aggregates.Any() && !Columns.IsAggregateOnlyQuery)
-                throw new SqlException("Your query contains fields and aggregates but no GROUP BY clause.\n", SqlErrorKind.Semantic);
+                throw new SqlException("Fields and aggregates can't be selected together without GROUP BY.\n", SqlErrorKind.Semantic);
 
             if ((Columns.Distinct || GroupByClause != null) && OrderByClause != null)
             {
                 var selectFields = Columns.FieldList;
                 foreach (OrderByItem item in OrderByClause.OrderByItems)
                 {
-                    if (item.SelectColumn() == null && !selectFields.Contains(item.Id.LookupId, StringComparer.OrdinalIgnoreCase))
-                        throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The query specifies DISTINCT or GROUP BY but contains an ORDER BY field '{0}' that is not included in the result list.", item.Id.LookupId), SqlErrorKind.Semantic);
+                    if (item.SelectColumn() == null && !selectFields.Contains(item.Id.LookupId, StringComparer.OrdinalIgnoreCase) && !item.Id.LookupId.StartsWith(SqlParser.Placeholder, StringComparison.Ordinal))
+                        throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY '{0}' can't be used with DISTINCT or GROUP BY because it isn't in the select list.", item.Id.LookupId), SqlErrorKind.Semantic);
                 }
             }
 

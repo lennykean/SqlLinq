@@ -27,10 +27,10 @@ namespace SqlLinq.UnitTests
 
         public override bool Equals(object o)
         {
-            if (object.ReferenceEquals(o, null) || o.GetType() != this.GetType())
+            if (ReferenceEquals(o, null) || o.GetType() != this.GetType())
                 return false;
 
-            return object.ReferenceEquals(o, this) || this.GetHashCode() == o.GetHashCode();
+            return ReferenceEquals(o, this) || this.GetHashCode() == o.GetHashCode();
         }
     }
 

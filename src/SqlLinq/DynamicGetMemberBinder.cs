@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq.Expressions;
 using System.Dynamic;
 using System.Reflection;
@@ -18,13 +19,20 @@ namespace SqlLinq
 
         public override DynamicMetaObject FallbackGetMember(DynamicMetaObject target, DynamicMetaObject errorSuggestion)
         {
-            var d = target.Value as IDictionary<string, object>;
-            if (d == null)
+            if (target.Value == null)
             {
-                throw new InvalidOperationException("Target object is not an ExpandoObject");
+                throw new InvalidOperationException(string.Format(CultureInfo.CurrentCulture, "{0} can't be read because the row is null.", Name));
             }
 
-            return DynamicMetaObject.Create(d, Expression.MakeIndex(Expression.Constant(d), _indexer, new Expression[] { Expression.Constant(this.Name) }));
+            var restrictions = BindingRestrictions.GetTypeRestriction(target.Expression, target.LimitType);
+            if (target.Value is IDictionary<string, object>)
+            {
+                return new DynamicMetaObject(Expression.MakeIndex(Expression.Convert(target.Expression, typeof(IDictionary<string, object>)), _indexer, new Expression[] { Expression.Constant(this.Name) }), restrictions);
+            }
+
+            var member = target.LimitType.GetPropertyOrField(Name) ?? throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} can't be read because it isn't a field of {1}.", Name, target.LimitType.Name), SqlErrorKind.UnknownName);
+
+            return new DynamicMetaObject(Expression.Convert(Expression.MakeMemberAccess(Expression.Convert(target.Expression, member.DeclaringType), member), typeof(object)), restrictions);
         }
     }
 }

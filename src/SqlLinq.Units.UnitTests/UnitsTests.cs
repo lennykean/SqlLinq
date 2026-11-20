@@ -125,7 +125,7 @@ namespace SqlLinq.Units.UnitTests
             Assert.AreEqual(95 * 1.8 + 32, fahrenheit, 1e-9);
 
             // Act & Assert
-            Fails("convert(CoreTemp, '°F', '°C')", "CoreTemp is in DegreeCelsius, not °F");
+            Fails("convert(CoreTemp, '°F', '°C')", "CoreTemp can't be converted from °F because it's in DegreeCelsius.");
         }
 
         [TestMethod]
@@ -137,15 +137,15 @@ namespace SqlLinq.Units.UnitTests
 
             // Act & Assert
             var e = Assert.ThrowsExactly<SqlException>(() => units.Expand(Parse("convert(Scan, 'psi')", units)));
-            Assert.Contains("needs a column with unit metadata", e.Message);
-            Fails("convert(CoreTemp * 2, '°F')", "needs a column with unit metadata");
+            Assert.Contains("can't be converted without unit metadata or a from unit", e.Message);
+            Fails("convert(CoreTemp * 2, '°F')", "can't be converted without unit metadata or a from unit");
         }
 
         [TestMethod]
         public void KindIsNeverGuessed()
         {
             // Act & Assert
-            Fails("convert(Scan, 'DegreeCelsius', 'DegreeFahrenheit')", "Scan has no unit metadata, so name the kind of 'DegreeCelsius': 'Temperature.DegreeCelsius' or 'TemperatureDelta.DegreeCelsius'.");
+            Fails("convert(Scan, 'DegreeCelsius', 'DegreeFahrenheit')", "Scan has no unit metadata, so 'DegreeCelsius' can't be converted without its kind: 'Temperature.DegreeCelsius' or 'TemperatureDelta.DegreeCelsius'.");
         }
 
         [TestMethod]
@@ -168,27 +168,29 @@ namespace SqlLinq.Units.UnitTests
         public void KindAppliesToBothUnits()
         {
             // Act & Assert
-            Fails("convert(Scan, 'Pressure.kPa', 'Temperature.°F')", "'Pressure.kPa' is Pressure, not Temperature");
-            Fails("convert(Scan, 'Pressure.kPa', '°F')", "'°F' isn't a Pressure unit");
-            Fails("convert(Scan, 'Pressure.nonsense', 'psi')", "'nonsense' isn't a Pressure unit");
-            Fails("convert(Scan, 'nonsense', 'psi')", "'nonsense' isn't a unit of any kind");
+            Fails("convert(Scan, 'Pressure.kPa', 'Temperature.°F')", "'Pressure.kPa' can't be converted to Temperature because it's Pressure.");
+            Fails("convert(Scan, 'Pressure.kPa', '°F')", "'°F' can't be used because it names no Pressure unit or more than one.");
+            Fails("convert(Scan, 'Pressure.nonsense', 'psi')", "'nonsense' can't be used because it names no Pressure unit or more than one.");
+            Fails("convert(Scan, 'nonsense', 'psi')", "'nonsense' can't be converted because it names no unit or more than one.");
         }
 
         [TestMethod]
-        public void AbbreviationsAreCaseSensitiveAndNamesAreNot()
+        public void AbbreviationsIgnoreCaseUnlessThatIsAmbiguousAndNamesAlwaysDo()
         {
             // Act
             var millibar = Max("convert(Scan, 'Pressure.bar', 'mbar')");
             var megabar = Max("convert(Scan, 'Pressure.bar', 'Mbar')");
             var milliseconds = Max("convert(Scan, 'duration.second', 'MilliSecond')");
+            var psi = Max("convert(Scan, 'Pressure.KPA', 'psi')");
 
             // Assert
             Assert.AreEqual(4000.0, millibar, 1e-9);
             Assert.AreEqual(4e-6, megabar, 1e-15);
             Assert.AreEqual(4000.0, milliseconds, 1e-9);
+            Assert.AreEqual(4 * PsiPerKpa, psi, 1e-9);
 
             // Act & Assert
-            Fails("convert(Scan, 'Pressure.KPA', 'psi')", "isn't a Pressure unit");
+            Fails("convert(Scan, 'Pressure.MBAR', 'psi')", "'MBAR' can't be used because it names no Pressure unit or more than one.");
         }
 
         [TestMethod]
@@ -244,9 +246,9 @@ namespace SqlLinq.Units.UnitTests
         }
 
         [TestMethod]
-        [DataRow("convert(CoreTemp)", "convert takes ")]
-        [DataRow("convert(CoreTemp, 'a', 'b', 'c')", "convert takes ")]
-        [DataRow("convert(CoreTemp, °F)", "Expected a quoted string but found °F")]
+        [DataRow("convert(CoreTemp)", "convert can't run because it takes 2 or 3 arguments, not 1.")]
+        [DataRow("convert(CoreTemp, 'a', 'b', 'c')", "convert can't run because it takes 2 or 3 arguments, not 4.")]
+        [DataRow("convert(CoreTemp, °F)", "The text can't be unquoted because it isn't a quoted string: °F")]
         public void BadCallsThrowSqlException(string expression, string message)
         {
             // Act & Assert
@@ -262,6 +264,20 @@ namespace SqlLinq.Units.UnitTests
 
             // Assert
             CollectionAssert.AreEqual(Frames.Where(f => f.CoreTemp * 1.8 + 32 > 190).ToList(), hot.ToList());
+        }
+
+        [TestMethod]
+        [DataRow("convert(CoreTemp, '°F')")]
+        [DataRow("convert(DriveSpin, 'r/s')")]
+        public void ConvertReadsTypedColumnsUnboxed(string expression)
+        {
+            // Act
+            var lambda = SqlExpression.Lambda<Frame>(Parse(expression, Units));
+            var call = (System.Linq.Expressions.MethodCallExpression)((System.Linq.Expressions.UnaryExpression)lambda.Body).Operand;
+
+            // Assert
+            Assert.AreEqual(typeof(double?), call.Type);
+            Assert.AreEqual(typeof(double?), call.Arguments[0].Type);
         }
 
         [TestMethod]
@@ -316,7 +332,75 @@ namespace SqlLinq.Units.UnitTests
         {
             // Act & Assert
             var e = Assert.ThrowsExactly<SqlException>(() => MaxAsFunction("convert(Scan, 'Power.Petawatt', 'Femtowatt')"));
-            Assert.Contains("overflowed", e.Message);
+            Assert.Contains("can't convert 1 because the result is out of range.", e.Message);
+        }
+
+        [TestMethod]
+        public void QualifiedColumnsUseTheirMetadata()
+        {
+            // Act
+            var thisQualified = Max("convert(this.CoreTemp, '°F')");
+            var asFunction = MaxAsFunction("convert(this.CoreTemp, '°F')");
+            var hot = Frames.UnitQuery("SELECT * FROM this t WHERE convert(t.CoreTemp, '°F') > 190", Units);
+
+            // Assert
+            Assert.AreEqual(95 * 1.8 + 32, thisQualified, 1e-9);
+            Assert.AreEqual(95 * 1.8 + 32, asFunction, 1e-9);
+            CollectionAssert.AreEqual(Frames.Where(f => f.CoreTemp * 1.8 + 32 > 190).ToList(), hot.ToList());
+        }
+
+        [TestMethod]
+        public void ExpressionsOfColumnsConvertAsBareValues()
+        {
+            // Act
+            var expanded = Units.Expand(Parse("convert(Scan * f.DriveSpin, 'Length.km', 'm')", Units)).ToSql();
+            var far = Frames.UnitQuery("SELECT * FROM this f WHERE convert(Scan * f.DriveSpin, 'Length.km', 'm') > 20000000", Units);
+
+            // Assert
+            Assert.AreEqual("((Scan * f.DriveSpin) * 1000.0 + 0.0)", expanded);
+            CollectionAssert.AreEqual(Frames.Where(f => f.Scan * f.DriveSpin * 1000 > 20000000).ToList(), far.ToList());
+        }
+
+        [TestMethod]
+        public void AnAmbiguousAbbreviationNamesItsUnits()
+        {
+            // Act
+            var ambiguous = Assert.ThrowsExactly<SqlException>(() => Run("SELECT max(convert(Range, 'pica')) FROM shipslog"));
+            var unknown = Assert.ThrowsExactly<SqlException>(() => Run("SELECT max(convert(Range, 'nonsense')) FROM shipslog"));
+
+            // Assert
+            Assert.AreEqual("'pica' can't be resolved for Range (Meter) because it could be 'DtpPica' or 'PrinterPica'.", ambiguous.Message);
+            Assert.Contains(", DtpPica, ", unknown.Message);
+            Assert.Contains(", PrinterPica, ", unknown.Message);
+            Assert.DoesNotContain(" pica,", unknown.Message);
+        }
+
+        [TestMethod]
+        [DataRow("convert(CoreTemp, 'nonsense')")]
+        [DataRow("convert(CoreTemp, '°F', '°C')")]
+        [DataRow("convert(CoreTemp * 2, '°F')")]
+        [DataRow("convert(CoreTemp)")]
+        [DataRow("convert(CoreTemp, Scan)")]
+        [DataRow("convert(Scan, 'Pressure.nonsense', 'bar')")]
+        public void ExpandErrorsAreAtTheirConvert(string call)
+        {
+            // Arrange
+            var nrql = "SELECT max(" + call + ") FROM shipslog";
+
+            // Act
+            var e = Assert.ThrowsExactly<SqlException>(() => Run(nrql));
+
+            // Assert
+            Assert.AreEqual(nrql.IndexOf(call, StringComparison.Ordinal), e.Start);
+            Assert.AreEqual(call.Length, e.Length);
+        }
+
+        [TestMethod]
+        public void AWrongFromUnitIsAFromUnitError()
+        {
+            // Act & Assert
+            Fails("convert(PlasmaPressure, 'Mass.kg', 'psi')", "PlasmaPressure can't be converted from Mass.kg because it's in Kilopascal.");
+            Fails("convert(PlasmaPressure, 'mbar', 'psi')", "PlasmaPressure can't be converted from mbar because it's in Kilopascal.");
         }
 
         [TestMethod]
@@ -327,6 +411,112 @@ namespace SqlLinq.Units.UnitTests
 
             // Assert
             CollectionAssert.AreEqual(Frames.Where(f => 100 / f.Scan > 40).ToList(), efficient.ToList());
+        }
+
+        [TestMethod]
+        [DataRow("SELECT * FROM this WHERE convert(CoreTemp, 'nonsense') > 1", "convert(CoreTemp, 'nonsense')")]
+        [DataRow("SELECT convert(CoreTemp) AS F FROM this", "convert(CoreTemp)")]
+        public void UnitQueryErrorsAreAtTheirConvert(string sql, string call)
+        {
+            // Act
+            var e = Assert.ThrowsExactly<SqlException>(() => Frames.UnitQuery<Frame, IDictionary<string, object>>(sql, Units).ToList());
+
+            // Assert
+            Assert.AreEqual(sql.IndexOf(call, StringComparison.Ordinal), e.Start);
+            Assert.AreEqual(call.Length, e.Length);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT average(convert(Station, 'Length.m', 'km')) FROM shipslog")]
+        [DataRow("SELECT count(*) FROM shipslog WHERE convert(Station, 'Length.m', 'km') > 1")]
+        public void ExpandedErrorsQuoteTheConvertAsWritten(string nrql)
+        {
+            // Act
+            var e = Assert.ThrowsExactly<SqlException>(() => new TimeSeriesQuery<Log>(nrql, l => TimeSpan.FromSeconds(l.Time), Units.Expand, [Units]));
+
+            // Assert
+            Assert.Contains("convert(Station, 'Length.m', 'km')", e.Message);
+            Assert.DoesNotContain("0.001", e.Message);
+            Assert.AreEqual(nrql.IndexOf("convert", StringComparison.Ordinal), e.Start);
+        }
+
+        [TestMethod]
+        public void ConversionsForAnotherRowTypeAreSqlExceptions()
+        {
+            // Arrange
+            var logs = new List<Log> { new Log { CoreTemp = 68 } };
+
+            // Act
+            var queried = Assert.ThrowsExactly<SqlException>(() => logs.UnitQuery("SELECT * FROM this WHERE convert(CoreTemp, 'K') > 0", Units).ToList());
+            var stated = logs.UnitQuery<Log, IDictionary<string, object>>("SELECT convert(CoreTemp, 'Temperature.°F', 'K') AS K FROM this", Units).Single();
+
+            // Assert
+            Assert.AreEqual("CoreTemp can't be converted without unit metadata or a from unit.", queried.Message);
+            Assert.AreEqual(293.15, (double)stated["K"], 1e-9);
+        }
+
+        [TestMethod]
+        public void NonFiniteValuesConvertToThemselves()
+        {
+            // Arrange
+            var values = new object[] { double.NaN, double.PositiveInfinity, double.NegativeInfinity };
+            var frames = values.Select(v => new Frame { CoreTemp = (double)v, Range = (double)v }).ToList();
+            var series = new TimeSeriesQuery<Frame>("SELECT convert(CoreTemp, '°F') AS F, convert(Range, 'km') AS K FROM shipslog", f => TimeSpan.Zero, Units.Expand, [Units]);
+
+            // Act
+            var expanded = series.Evaluate(frames);
+            var queried = frames.UnitQuery<Frame, IDictionary<string, object>>("SELECT convert(CoreTemp, '°F') AS F, convert(Range, 'km') AS K FROM this", Units).ToList();
+            var cold = frames.UnitQuery("SELECT * FROM this WHERE NOT convert(CoreTemp, '°F') > 0", Units).ToList();
+
+            // Assert
+            CollectionAssert.AreEqual(values, expanded.Select(r => r["F"]).ToList());
+            CollectionAssert.AreEqual(values, expanded.Select(r => r["K"]).ToList());
+            CollectionAssert.AreEqual(values, queried.Select(r => r["F"]).ToList());
+            CollectionAssert.AreEqual(values, queried.Select(r => r["K"]).ToList());
+            CollectionAssert.AreEqual(new[] { frames[0], frames[2] }, cold);
+        }
+
+        [TestMethod]
+        public void ResultsOutOfRangeAreSqlExceptions()
+        {
+            // Arrange
+            var frames = new List<Frame> { new Frame { CoreTemp = 1e308, Scan = -5.5 } };
+
+            // Act
+            var overflow = Assert.ThrowsExactly<SqlException>(() => frames.UnitQuery<Frame, IDictionary<string, object>>("SELECT convert(CoreTemp, '°F') AS F FROM this", Units).ToList());
+            var undefined = Assert.ThrowsExactly<SqlException>(() => frames.UnitQuery<Frame, IDictionary<string, object>>("SELECT convert(Scan, 'Pressure.kPa', 'm of elevation') AS E FROM this", Units).ToList());
+
+            // Assert
+            Assert.AreEqual("convert(CoreTemp, '°F') can't convert 1E+308 because the result is out of range.", overflow.Message);
+            Assert.AreEqual(SqlErrorKind.Evaluation, overflow.Kind);
+            Assert.EndsWith(" because the result is out of range.", undefined.Message);
+            Assert.AreEqual(SqlErrorKind.Evaluation, undefined.Kind);
+        }
+
+        [TestMethod]
+        public void EveryAbbreviationUnitsNetKnowsConverts()
+        {
+            // Act
+            var secondary = Max("convert(PlasmaPressure, 'lb/in²')");
+            var padded = Max("convert(CoreTemp, ' °F')");
+            var pounds = Max("convert(Scan, 'Mass.lbs', 'kg')");
+
+            // Assert
+            Assert.AreEqual(Max("convert(PlasmaPressure, 'psi')"), secondary);
+            Assert.AreEqual(Max("convert(CoreTemp, '°F')"), padded);
+            Assert.AreEqual(Max("convert(Scan, 'Mass.lb', 'kg')"), pounds);
+
+            // Act & Assert
+            Fails("convert(Scan, 'Length.pt', 'm')", "'pt' can't be used because it names no Length unit or more than one.");
+        }
+
+        private sealed class Log
+        {
+            public double Time { get; set; }
+
+            public string Station { get; set; }
+
+            public double CoreTemp { get; set; }
         }
     }
 }

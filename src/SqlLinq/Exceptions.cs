@@ -68,7 +68,7 @@ namespace SqlLinq
         {
             if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
             {
-                throw new SqlException("The query is nested too deeply.", SqlErrorKind.Semantic);
+                throw new SqlException("The query can't be translated because it's nested too deeply.", SqlErrorKind.Semantic);
             }
         }
     }

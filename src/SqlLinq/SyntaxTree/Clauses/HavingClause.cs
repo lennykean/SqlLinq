@@ -3,6 +3,7 @@ using System.Linq;
 using System.Linq.Expressions;
 
 using SqlLinq.SyntaxTree.Aggregates;
+using SqlLinq.SyntaxTree.Expressions;
 
 namespace SqlLinq.SyntaxTree.Clauses
 {
@@ -17,7 +18,7 @@ namespace SqlLinq.SyntaxTree.Clauses
         {
             get
             {
-                return FindDescendants<AggregateNode>().Any(a => a.EnclosingSelect() == Parent);
+                return FindDescendants<AggregateNode>().Concat(FindDescendants<NodeWithId>().SelectMany(n => n.Aggregates)).Any(a => a.EnclosingSelect() == Parent);
             }
         }
 

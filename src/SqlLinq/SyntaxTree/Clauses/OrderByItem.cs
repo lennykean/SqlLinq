@@ -53,7 +53,7 @@ namespace SqlLinq.SyntaxTree.Clauses
         {
             LambdaExpression lambda = CreateLambaExpression(tSource);
 
-            return Expression.Call(typeof(Enumerable), IsDescending ? functionName + "Descending" : functionName, new Type[] { tSource, lambda.ReturnType }, param, lambda);
+            return ResultOrder.Sort(IsDescending ? functionName + "Descending" : functionName, tSource, param, lambda);
         }
 
         protected virtual LambdaExpression CreateLambaExpression(Type tSource)
@@ -73,7 +73,7 @@ namespace SqlLinq.SyntaxTree.Clauses
 
             if (column is AggregateNode)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} refers to an aggregate, which needs GROUP BY or an aggregate-only select list.", Id.LookupId), SqlErrorKind.Semantic);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} can't refer to an aggregate without GROUP BY.", Id.LookupId), SqlErrorKind.Semantic, Start, Length);
             }
 
             var item = Expression.Parameter(tSource, "item");

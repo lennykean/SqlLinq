@@ -32,21 +32,37 @@ namespace SqlLinq.UnitTests
 
         [TestMethod]
         [DataRow("SELECT * FROM this WHERE Rank >", "")]
-        [DataRow("SELECT * FROM this /* unclosed", "")]
+        [DataRow("SELECT * FROM this /* unclosed", "/* unclosed")]
         [DataRow("SELECT * FROM this WHERE Name = 'Ed", "'")]
         [DataRow("SELECT Name, FROM this", "FROM")]
         [DataRow("SELECT * FROM this WHERE Age 18", "18")]
         [DataRow("SELECT Name FROM this WHERE twice(Rank > 6", "twice(Rank > 6")]
         [DataRow("SELECT Name FROM this WHERE nofunc(Rank) > 6", "nofunc")]
         [DataRow("SELECT Name FROM this WHERE twice(nofunc(Rank)) > 6", "nofunc")]
+        [DataRow("SELECT Name FROM this WHERE (pi() > 1", "(pi() > 1")]
+        [DataRow("SELECT Name FROM this WHERE (round(Rank, 1) > 1", "(round(Rank, 1) > 1")]
+        [DataRow("SELECT Name FROM this WHERE (twice(Rank) > abs(1) AND (Rank < 5)", "(twice(Rank) > abs(1) AND (Rank < 5)")]
         public void ParseErrorsCarryTheirPosition(string sql, string text)
         {
             // Act
             var error = SqlSyntaxTree.Parse(sql, Functions).Error;
 
             // Assert
-            Assert.AreEqual(sql.LastIndexOf(text, System.StringComparison.Ordinal), error.Start);
+            Assert.AreEqual(sql.LastIndexOf(text, StringComparison.Ordinal), error.Start);
             Assert.AreEqual(text.Length, error.Length);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT abs(1), (pi() + 1 FROM this WHERE (Rank > pi() AND (Rank < 5)")]
+        [DataRow("SELECT Name FROM this WHERE Rank IN (SELECT pi() FROM this WHERE (pi() > 1)")]
+        public void ErrorsOfEveryPrefixStayInsideItsText(string sql)
+        {
+            // Act
+            var errors = Enumerable.Range(1, sql.Length).Select(n => (Length: n, SqlSyntaxTree.Parse(sql.Substring(0, n)).Error)).Where(p => p.Error != null).ToList();
+
+            // Assert
+            Assert.IsNotEmpty(errors);
+            Assert.IsEmpty(errors.Where(p => p.Error.Start < 0 || p.Error.Length < 0 || p.Error.Start + p.Error.Length > p.Length).Select(p => p.Length).ToList());
         }
 
         [TestMethod]
@@ -72,6 +88,9 @@ namespace SqlLinq.UnitTests
         [DataRow("SELECT Name, Rank FROM this WHERE", "Name@7, Rank@13")]
         [DataRow("SELECT Name AS Who FROM this WHERE Age >= 18 ORDER BY Who", "Name@7, Age@35")]
         [DataRow("SELECT twice(Rank) FROM this WHERE twice(Age + Pay) > 1", "Rank@13, Age@41, Pay@47")]
+        [DataRow("SELECT Name FROM this ORDER BY twice(Rank)", "Name@7")]
+        [DataRow("SELECT Name FROM this WHERE twice(Rank) >", "Name@7")]
+        [DataRow("SELECT c.Name FROM crew c JOIN ships s ON c.ShipId = twice(s.Id)", "c.Name@7, c.ShipId@42")]
         public void NamesAreTheMembersTheTextReads(string sql, string expected)
         {
             // Act
@@ -145,8 +164,8 @@ namespace SqlLinq.UnitTests
             Assert.AreEqual("twice", call.FunctionName);
             Assert.AreEqual("Rank + 1", call.Arguments.Single().Text);
             Assert.AreEqual("Rank + 1", call.Arguments.Single().Expression.ToSql());
-            Assert.AreEqual(Expression.IndexOf("Rank", System.StringComparison.Ordinal), call.Arguments.Single().Start);
-            Assert.AreEqual(Expression.IndexOf("twice", System.StringComparison.Ordinal), call.Start);
+            Assert.AreEqual(Expression.IndexOf("Rank", StringComparison.Ordinal), call.Arguments.Single().Start);
+            Assert.AreEqual(Expression.IndexOf("twice", StringComparison.Ordinal), call.Start);
             Assert.AreEqual("twice(Rank + 1)".Length, call.Length);
         }
 

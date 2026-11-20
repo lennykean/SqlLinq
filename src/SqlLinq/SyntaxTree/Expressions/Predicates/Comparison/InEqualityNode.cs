@@ -17,7 +17,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
                 return Expression.Not(Expression.Call(typeof(EqualityNode), nameof(EqualityNode.ValuesEqual), null, left, right));
             }
 
-            return Expression.NotEqual(left, right);
+            return Known(Expression.NotEqual(left, right), left, right);
         }
     }
 }

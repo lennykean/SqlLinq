@@ -22,12 +22,12 @@ namespace SqlLinq.SyntaxTree.Expressions
                 return Expression.NewArrayInit(typeof(object));
             }
 
-            var type = values.Select(v => v.Type).Aggregate((widest, next) => widest.Widest(next) ?? typeof(object));
+            var type = values.Select(v => v.Type).Aggregate((widest, next) => widest.Widest(next) ?? typeof(object)).Lifted(values.Select(v => v.Type).ToArray());
 
-            return Expression.NewArrayInit(type, values.Select(v => v.Type == type ? v : ExpressionFactory.ConvertTo(v, type)));
+            return Compiled(() => Expression.NewArrayInit(type, values.Select(v => v.Type == type ? v : ExpressionFactory.ConvertTo(v, type))));
         }
 
-        private IEnumerable<ExpressionNode> Values()
+        internal IEnumerable<ExpressionNode> Values()
         {
             foreach (var child in Children.OfType<ExpressionNode>())
             {

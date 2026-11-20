@@ -211,12 +211,12 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("abs()", "abs takes one value, e.g. abs(RPM).")]
-        [DataRow("ABS(1, 2)", "abs takes one value, e.g. abs(RPM).")]
-        [DataRow("mod(7)", "mod takes two values, e.g. mod(RPM, 1000).")]
-        [DataRow("round(1, 2, 3)", "round takes one or two values, e.g. round(AFR) or round(AFR, 1).")]
-        [DataRow("log(8)", "log takes two values, e.g. log(2, RPM).")]
-        [DataRow("pi(1)", "pi takes no values, e.g. pi().")]
+        [DataRow("abs()", "abs can't be calculated because it takes 1 argument, not 0.")]
+        [DataRow("ABS(1, 2)", "abs can't be calculated because it takes 1 argument, not 2.")]
+        [DataRow("mod(7)", "mod can't be calculated because it takes 2 arguments, not 1.")]
+        [DataRow("round(1, 2, 3)", "round can't be calculated because it takes 1 or 2 arguments, not 3.")]
+        [DataRow("log(8)", "log can't be calculated because it takes 2 arguments, not 1.")]
+        [DataRow("pi(1)", "pi can't be calculated because it takes no arguments, not 1.")]
         public void MathFunctionArgumentCountsAreChecked(string expression, string message)
         {
             // Act & Assert

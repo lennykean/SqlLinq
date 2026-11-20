@@ -13,7 +13,7 @@ namespace SqlLinq
 {
     public static class SqlSyntax
     {
-        private static readonly Regex CallStart = new Regex(@"'[^']*'|\[[^\]]*\]|\b(\w+)\s*\(");
+        private static readonly Regex CallStart = new Regex(@"'[^']*'|\[[^\]]*\]|--[^\r\n]*|/\*[\s\S]*?(?:\*/|\z)|(?<!\.)\b(\w+)\s*\(");
 
         private static readonly Regex Bracketed = new Regex(@"\[([^\]]*)\]");
 
@@ -126,7 +126,7 @@ namespace SqlLinq
 
                 if (close < 0)
                 {
-                    throw new SqlException("Unbalanced parentheses in " + text, SqlErrorKind.UnbalancedParentheses, match.Index, text.Length - match.Index);
+                    throw new SqlException("The query can't be read because a function call has no closing parenthesis.", SqlErrorKind.UnbalancedParentheses, match.Index, text.Length - match.Index);
                 }
                 calls.Add(new FunctionCall(match.Index, close, match.Groups[1].Value, text.Substring(open + 1, close - open - 1)));
 
@@ -178,7 +178,7 @@ namespace SqlLinq
         {
             if (text.Length < 2 || text[0] != '\'' || text[text.Length - 1] != '\'')
             {
-                throw new SqlException("Expected a quoted string but found " + text, SqlErrorKind.Syntax);
+                throw new SqlException("The text can't be unquoted because it isn't a quoted string: " + text, SqlErrorKind.Syntax);
             }
 
             return text[1..^1];
@@ -266,6 +266,7 @@ namespace SqlLinq
         {
             var depth = 0;
             var quoted = false;
+            var quote = -1;
             var bracketed = false;
 
             for (var i = open; i < text.Length; i++)
@@ -282,6 +283,7 @@ namespace SqlLinq
                 else if (c == '\'')
                 {
                     quoted = true;
+                    quote = i;
                 }
                 else if (c == '[')
                 {
@@ -296,6 +298,12 @@ namespace SqlLinq
                     return i;
                 }
             }
+
+            if (quoted)
+            {
+                throw new SqlException("The query can't be read because a string has no closing quote.", SqlErrorKind.UnterminatedString, quote, 1);
+            }
+
             return -1;
         }
     }

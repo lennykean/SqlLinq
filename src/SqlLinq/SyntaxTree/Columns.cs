@@ -5,6 +5,7 @@ using System.Linq.Expressions;
 using System.Globalization;
 
 using SqlLinq.SyntaxTree.Aggregates;
+using SqlLinq.SyntaxTree.Expressions;
 
 namespace SqlLinq.SyntaxTree
 {
@@ -29,8 +30,8 @@ namespace SqlLinq.SyntaxTree
             {   // we have only calculated fields
                 var columns = ColumnSources.ToList();
 
-                return columns.Any(c => c is AggregateNode || c is ComputedColumn computed && computed.HasAggregates)
-                    && columns.All(c => c is AggregateNode || c is ComputedColumn computed && !computed.Fields.Any());
+                return columns.Any(c => c is AggregateNode || c is ComputedColumn computed && computed.HasAggregates || c.ArgumentAggregates.Any())
+                    && columns.All(c => c is AggregateNode || c is ComputedColumn computed && !computed.Fields.Any() || c.Id.LookupId.StartsWith(SqlParser.Placeholder, StringComparison.Ordinal) && !c.ArgumentFields.Any());
             }
         }
 
@@ -38,7 +39,7 @@ namespace SqlLinq.SyntaxTree
         {
             get
             {
-                return FindDescendants<AggregateNode>().Where(a => a.EnclosingSelect() == EnclosingSelect());
+                return FindDescendants<AggregateNode>().Concat(FindDescendants<ColumnSource>().SelectMany(c => c.ArgumentAggregates)).Concat(FindDescendants<NodeWithId>().SelectMany(n => n.Aggregates)).Where(a => a.EnclosingSelect() == EnclosingSelect());
             }
         }
 
@@ -62,7 +63,7 @@ namespace SqlLinq.SyntaxTree
         }
 
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Performance", "CA1811:AvoidUncalledPrivateCode")]
-        private static TResult GetScalarValue<TResult>(IEnumerable<object> resultList)
+        private protected static TResult GetScalarValue<TResult>(IEnumerable<object> resultList)
         {
             object ret = resultList.First();
 
@@ -70,10 +71,12 @@ namespace SqlLinq.SyntaxTree
             // - this bit here allows subqueries to return objects
             // wrapped in expando objects - this current implementation makes execute scalar flaky around the edges
             if (ret is IDictionary<string, object>)
-                return (TResult)((IDictionary<string, object>)ret).Values.First();
+                ret = ((IDictionary<string, object>)ret).Values.First();
+            else if (ret != null && ret.GetType().IsTuple())
+                ret = ret.GetPropertyOrFieldValue("Item1");
 
-            if (ret.GetType().IsTuple())
-                return (TResult)ret.GetPropertyOrFieldValue("Item1");
+            if (ret == null && default(TResult) != null)
+                throw new InvalidOperationException(string.Format(CultureInfo.CurrentCulture, "The query returned NULL, which {0} can't hold.", typeof(TResult).Name));
 
             return (TResult)ret;
         }
@@ -109,7 +112,7 @@ namespace SqlLinq.SyntaxTree
             var names = columns.Select(c => c.ColumnAlias).ToList();
             if (columns.Count > 1)
             {
-                RequireDistinctNames(tResult, names);
+                RequireDistinctNames(tResult, columns);
             }
 
             return ExpressionFactory.CreateResult(tResult, names, columns.Select(c => c.CreateRowValue(rows, row)).ToList());
@@ -127,18 +130,20 @@ namespace SqlLinq.SyntaxTree
             }
 
             var names = columns.Select(c => c.ColumnAlias).ToList();
-            RequireDistinctNames(tResult, names);
+            RequireDistinctNames(tResult, columns);
 
             return ExpressionFactory.CreateResult(tResult, names, values, true);
         }
 
-        internal static void RequireDistinctNames(Type tResult, IEnumerable<string> names)
+        internal static void RequireDistinctNames(Type tResult, List<ColumnSource> columns)
         {
             var byName = tResult.IsDictionary() || tResult == typeof(object) || tResult.HasEmptyConstructor();
-            var duplicate = names.GroupBy(n => n, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
+            var duplicate = columns.GroupBy(c => c.ColumnAlias, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
             if (byName && duplicate != null)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The select list has more than one column named '{0}'; give each a different name with AS.", duplicate.Key), SqlErrorKind.Semantic);
+                var column = duplicate.ElementAt(1);
+
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The result can't be built because the select list has more than one column named '{0}'.", duplicate.Key), SqlErrorKind.Semantic, column.Start, column.Length);
             }
         }
 

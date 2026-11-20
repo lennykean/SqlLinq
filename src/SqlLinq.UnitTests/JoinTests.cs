@@ -1,8 +1,6 @@
 ﻿using System;
-using System.Text;
 using System.Collections.Generic;
 using System.Linq;
-using System.Diagnostics;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace SqlLinq.UnitTests
@@ -20,7 +18,7 @@ namespace SqlLinq.UnitTests
                          join f in families on p.Address equals f.Address
                          select new FamilyMember { Name = p.Name, LastName = f.Name, Location = p.Address };
 
-            var result = source.Query<Person, Family, FamilyMember>("SELECT Name, that.Name AS LastName, Address AS Location FROM this INNER JOIN that ON this.Address = that.Address", families);
+            var result = source.Query<Person, Family, FamilyMember>("SELECT this.Name, that.Name AS LastName, this.Address AS Location FROM this INNER JOIN that ON this.Address = that.Address", families);
 
             Assert.IsTrue(result.Any());
             Assert.IsTrue(answer.Any());
@@ -79,7 +77,7 @@ namespace SqlLinq.UnitTests
                             {"Location", p.Address}
                          };
 
-            var result = source.Query<Person, Family, IDictionary<string, object>>("SELECT Name, that.Name AS LastName, Address AS Location FROM this INNER JOIN that ON this.Address = that.Address", families);
+            var result = source.Query<Person, Family, IDictionary<string, object>>("SELECT this.Name, that.Name AS LastName, this.Address AS Location FROM this INNER JOIN that ON this.Address = that.Address", families);
 
             Assert.IsTrue(result.Any());
             Assert.IsTrue(answer.Any());
@@ -198,7 +196,7 @@ namespace SqlLinq.UnitTests
             var answer = source.Join<Person, Family, string, FamilyMember>(families, p => p.Address, f => f.Address,
                 (p, f) => new FamilyMember { Name = p.Name, LastName = f.Name, Location = f.Address }).OrderByDescending(m => m.Location);
 
-            var result = source.Query<Person, Family, FamilyMember>("SELECT Name, that.Name AS LastName, Address AS Location FROM this INNER JOIN that ON this.Address = that.Address ORDER BY Address DESC", families);
+            var result = source.Query<Person, Family, FamilyMember>("SELECT this.Name, that.Name AS LastName, this.Address AS Location FROM this INNER JOIN that ON this.Address = that.Address ORDER BY this.Address DESC", families);
 
             Assert.IsTrue(result.Any());
             Assert.IsTrue(answer.Any());
@@ -215,7 +213,7 @@ namespace SqlLinq.UnitTests
                          where p.Address == "401 Main St., St. Paul, MN 55132"
                          select new FamilyMember { Name = p.Name, LastName = f.Name, Location = f.Address };
 
-            var result = source.Query<Person, Family, FamilyMember>("SELECT this.Name, that.Name AS LastName, Address AS Location FROM this INNER JOIN that ON this.Address = that.Address WHERE this.Address = '401 Main St., St. Paul, MN 55132'", families);
+            var result = source.Query<Person, Family, FamilyMember>("SELECT this.Name, that.Name AS LastName, this.Address AS Location FROM this INNER JOIN that ON this.Address = that.Address WHERE this.Address = '401 Main St., St. Paul, MN 55132'", families);
 
             Assert.IsTrue(result.Any());
             Assert.IsTrue(answer.Any());
@@ -232,7 +230,7 @@ namespace SqlLinq.UnitTests
                          where p.Address.StartsWith("401", StringComparison.CurrentCulture)
                          select new FamilyMember { Name = p.Name, LastName = f.Name, Location = f.Address };
 
-            var result = source.Query<Person, Family, FamilyMember>("SELECT this.Name, that.Name AS LastName, Address AS Location FROM this INNER JOIN that ON this.Address = that.Address WHERE this.Address LIKE '401%'", families);
+            var result = source.Query<Person, Family, FamilyMember>("SELECT this.Name, that.Name AS LastName, this.Address AS Location FROM this INNER JOIN that ON this.Address = that.Address WHERE this.Address LIKE '401%'", families);
 
             Assert.IsTrue(result.Any());
             Assert.IsTrue(answer.Any());
@@ -249,7 +247,7 @@ namespace SqlLinq.UnitTests
                          where f.Name == "Smith"
                          select new FamilyMember { Name = p.Name, LastName = f.Name, Location = f.Address };
 
-            var result = source.Query<Person, Family, FamilyMember>("SELECT Name, that.Name AS LastName, Address AS Location FROM this INNER JOIN that ON this.Address = that.Address WHERE that.Name = 'Smith'", families);
+            var result = source.Query<Person, Family, FamilyMember>("SELECT this.Name, that.Name AS LastName, this.Address AS Location FROM this INNER JOIN that ON this.Address = that.Address WHERE that.Name = 'Smith'", families);
 
             Assert.IsTrue(answer.Any());
             Assert.IsTrue(result.Any());

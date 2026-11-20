@@ -6,7 +6,7 @@ using System.Collections.Generic;
 using System.Dynamic;
 using System.Globalization;
 
-namespace SqlLinq
+namespace SqlLinq.SyntaxTree
 {
     static class ExpressionFactory
     {
@@ -27,7 +27,13 @@ namespace SqlLinq
 
             if (values.Count == 1 && !tResult.IsTuple() && !(named && tResult == typeof(object)))
             {
-                return Converted(values[0], tResult);
+                try
+                {
+                    return Converted(values[0], tResult);
+                }
+                catch (InvalidOperationException) when (tResult.HasEmptyConstructor() && tResult.GetPropertyOrField(names[0]) != null)
+                {
+                }
             }
 
             if (tResult == typeof(object))
@@ -37,6 +43,12 @@ namespace SqlLinq
 
             if (tResult.HasEmptyConstructor())
             {
+                var missing = names.FirstOrDefault(name => tResult.GetPropertyOrField(name) == null);
+                if (missing != null)
+                {
+                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The result can't be built because {0} has no property or field named {1}.", tResult.Name, missing), SqlErrorKind.Semantic);
+                }
+
                 var bindings = names.Select((name, i) => Expression.Bind(tResult.GetPropertyOrField(name), Converted(values[i], tResult.GetPropertyOrFieldType(name))));
 
                 return Expression.MemberInit(Expression.New(tResult), bindings);
@@ -46,7 +58,7 @@ namespace SqlLinq
             var create = types.All(t => t != null) ? tResult.GetConstructor(types) : null;
             if (create == null)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} has no constructor that takes the {1} columns of the select list.", tResult.Name, names.Count), SqlErrorKind.Semantic);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The result can't be built because {0} has no constructor that takes the {1} columns of the select list.", tResult.Name, names.Count), SqlErrorKind.Semantic);
             }
 
             return Expression.New(create, values.Select((value, i) => Converted(value, types[i])));
@@ -62,10 +74,17 @@ namespace SqlLinq
 
         private static Expression Converted(Expression value, Type type)
         {
+            if (value.Type == typeof(bool?) && type == typeof(bool))
+            {
+                var error = Expression.New(typeof(InvalidOperationException).GetConstructor(new[] { typeof(string) }), Expression.Constant(string.Format(CultureInfo.CurrentCulture, "The query returned NULL, which {0} can't hold.", type.Name)));
+
+                return Expression.Coalesce(value, Expression.Throw(error, type));
+            }
+
             return value.Type == type ? value : ConvertTo(value, type);
         }
 
-        public static Expression CreateFieldSelector(Expression item, string propertyName)
+        public static Expression CreateFieldSelector(Expression item, string propertyName, Identifier id = null)
         {
             // source type is dynamic
             if (item.Type == typeof(object))
@@ -87,9 +106,14 @@ namespace SqlLinq
 
             // source type is a class or stuct
             var member = item.Type.GetPropertyOrField(propertyName);
+            if (member == null && id != null)
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} can't be read because it isn't a field of {1}.", id.LookupId, item.Type.Name), SqlErrorKind.UnknownName, id.Start, id.Length);
+            }
+
             if (member == null)
             {
-                var unknown = new ArgumentException(string.Format(CultureInfo.CurrentCulture, "'{0}' is not a member of type '{1}'", propertyName, item.Type), nameof(propertyName));
+                var unknown = new ArgumentException(string.Format(CultureInfo.CurrentCulture, "'{0}' can't be read because it isn't a member of type '{1}'", propertyName, item.Type), nameof(propertyName));
                 unknown.Data[nameof(SqlErrorKind)] = SqlErrorKind.UnknownName;
 
                 throw unknown;

@@ -12,8 +12,8 @@ namespace SqlLinq.TimeSeries
 {
     public sealed class TimeSeriesSyntaxTree
     {
-        private static readonly Regex ClauseKeyword = new Regex(@"'[^']*'|\[[^\]]*\]|\b(WHERE|FACET|SINCE|UNTIL|TIMESERIES|SESSION|LIMIT|COMPARE|GROUP|HAVING|ORDER)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        private static readonly Regex SelectFrom = new Regex(@"^\s*(SELECT)\s+(.+?)\s+(FROM)\s+(\[[^\]]+\]|\w+)\s*$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        private static readonly Regex ClauseKeyword = new Regex(@"'[^']*'|\[[^\]]*\]|[()]|\b(WHERE|FACET|SINCE|UNTIL|TIMESERIES|SESSION|LIMIT|COMPARE|GROUP|HAVING|ORDER)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        private static readonly Regex SelectFrom = new Regex(@"^\s*(SELECT)\s+(.+?)\s*\b(FROM)\s+(\[[^\]]+\]|\w+)\s*$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
         private static readonly Regex SourceName = new Regex(@"^(\[[^\]]+\]|\w+)$", RegexOptions.Singleline);
         private static readonly Regex Alias = new Regex(@"^(.+?)\s+AS\s+(\[[^\]]+\]|\w+)$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
         private static readonly Regex CompareWith = new Regex(@"^WITH\s+(.+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline);
@@ -133,7 +133,7 @@ namespace SqlLinq.TimeSeries
         {
             if (_rewritten)
             {
-                throw new InvalidOperationException("The tree is already rewritten.");
+                throw new InvalidOperationException("A rewritten tree can't be rewritten again.");
             }
 
             Func<ExpressionNode, ExpressionNode> hook = expression => rewrite?.Invoke(expression) ?? expression;
@@ -176,7 +176,7 @@ namespace SqlLinq.TimeSeries
             var clause = Editable(keyword);
             if (clause != "SELECT" && clause != "FACET")
             {
-                throw new ArgumentException("Only SELECT and FACET have items to add to.", nameof(keyword));
+                throw new ArgumentException("Items can't be added to " + keyword + " because it isn't SELECT or FACET.", nameof(keyword));
             }
 
             if (items == null)
@@ -201,20 +201,17 @@ namespace SqlLinq.TimeSeries
             }
 
             var bound = functions.Where(f => !AggregateFactory<object>.Names.Contains(f.Name) && !FacetExpression.BucketNames.Contains(f.Name)).ToList();
-            var tree = (TimeSeriesSyntaxTree)MemberwiseClone();
-            tree._functions = bound.Concat((_functions ?? Enumerable.Empty<ISqlFunction>()).Where(f => !bound.Any(b => b.Name.Equals(f.Name, StringComparison.OrdinalIgnoreCase)))).ToList();
-            tree.Facets = Facets.Select(f => f.Bind(bound)).ToList();
-            if (_rewritten)
+            var all = bound.Concat((_functions ?? Enumerable.Empty<ISqlFunction>()).Where(f => !bound.Any(b => b.Name.Equals(f.Name, StringComparison.OrdinalIgnoreCase)))).ToList();
+            if (!_rewritten)
             {
-                tree.Select = Select.Select(c => c.Bind(bound)).ToList();
-                tree.Where = (ExpressionNode)Where?.Bind(bound);
-
-                return tree;
+                return Parse(Text, all);
             }
 
-            tree._items = _items.Select(c => c.Bind(bound)).ToList();
-            tree._where = _where?.Root == null ? _where : _where.Bind(bound);
-            tree.Validate();
+            var tree = (TimeSeriesSyntaxTree)MemberwiseClone();
+            tree._functions = all;
+            tree.Facets = Facets.Select(f => f.Bind(bound)).ToList();
+            tree.Select = Select.Select(c => c.Bind(bound)).ToList();
+            tree.Where = (ExpressionNode)Where?.Bind(bound);
 
             return tree;
         }
@@ -256,7 +253,7 @@ namespace SqlLinq.TimeSeries
 
         internal static SqlException Unbalanced(SqlException error, string text)
         {
-            return error?.Kind == SqlErrorKind.UnbalancedParentheses ? new SqlException("Unbalanced parentheses in " + text, error.Kind, error.Start, error.Length) : error;
+            return error?.Kind == SqlErrorKind.UnbalancedParentheses ? new SqlException(text + " can't be read because its parentheses aren't balanced.", error.Kind, error.Start, error.Length) : error;
         }
 
         internal static SqlException Value(string text, ArgumentNode argument, IEnumerable<ISqlFunction> functions)
@@ -286,7 +283,7 @@ namespace SqlLinq.TimeSeries
             var clause = keyword.Trim().ToUpperInvariant();
             if (!Order.Contains(clause))
             {
-                throw new ArgumentException(keyword + " isn't a clause of a time series query.", nameof(keyword));
+                throw new ArgumentException(keyword + " can't be edited because it isn't a clause of a time series query.", nameof(keyword));
             }
 
             return clause;
@@ -467,7 +464,7 @@ namespace SqlLinq.TimeSeries
                 .ToList();
             if (!select.Success)
             {
-                SelectError = new SqlException("A time series query starts SELECT <columns> FROM <name>.", SqlErrorKind.Syntax, 0, head.Length);
+                SelectError = new SqlException("The query can't be read because it doesn't start with SELECT <columns> FROM <name>.", SqlErrorKind.Syntax, 0, head.Length);
             }
 
             Facets = clauses.TryGetValue("FACET", out var facets) ? FacetItems(facets.Text, facets.Start, previous?.Facets, at) : new List<TimeSeriesExpression>();
@@ -500,9 +497,7 @@ namespace SqlLinq.TimeSeries
                 return item;
             }
 
-            var shifted = item.Shift(_text, part.Start - item.Start);
-
-            return ReferenceEquals(item.Expression, item.Syntax.Root) ? shifted : shifted.Bind(_functions.ToList());
+            return item.Shift(_text, part.Start - item.Start);
         }
 
         private TimeSeriesExpression Item(string source, string item, int start)
@@ -531,7 +526,7 @@ namespace SqlLinq.TimeSeries
 
             if (Clause("SELECT") != null && Clause("FROM") is TimeSeriesClause from)
             {
-                SelectError = SourceName.IsMatch(from.Text) ? null : new SqlException("A time series query starts SELECT <columns> FROM <name>.", SqlErrorKind.Syntax, from.Start, from.Text.Length);
+                SelectError = SourceName.IsMatch(from.Text) ? null : new SqlException("FROM " + from.Text + " can't be read because it isn't a source name.", SqlErrorKind.Syntax, from.Start, from.Text.Length);
             }
 
             if (Clause("SINCE") is TimeSeriesClause since)
@@ -567,7 +562,7 @@ namespace SqlLinq.TimeSeries
             if (!Aggregated && (Facets.Count > 0 || TimeSeries != null || Session != null))
             {
                 var list = Clause("SELECT");
-                FinalError = new SqlException("FACET, TIMESERIES, and SESSION need aggregate functions in SELECT, e.g. average(RPM).", SqlErrorKind.Semantic, list?.Start ?? 0, list?.Text.Length ?? 0);
+                FinalError = new SqlException("FACET, TIMESERIES, and SESSION can't run without an aggregate in SELECT.", SqlErrorKind.Semantic, list?.Start ?? 0, list?.Text.Length ?? 0);
             }
 
             Names = Select.SelectMany(c => c.Names).Concat(_where?.Names ?? Array.Empty<Identifier>()).Concat(Facets.SelectMany(f => f.Names)).OrderBy(n => n.Start).ToList();
@@ -590,11 +585,11 @@ namespace SqlLinq.TimeSeries
             var with = CompareWith.Match(compare.Text);
             if (!with.Success)
             {
-                throw new SqlException("COMPARE WITH needs a duration, e.g. COMPARE WITH 1 minute ago.", SqlErrorKind.Syntax, compare.Start, compare.Text.Length);
+                throw new SqlException("COMPARE WITH can't run without a duration.", SqlErrorKind.Syntax, compare.Start, compare.Text.Length);
             }
             if (Since == null)
             {
-                throw new SqlException("COMPARE WITH needs a SINCE window to compare.", SqlErrorKind.Semantic, compare.Start, compare.Text.Length);
+                throw new SqlException("COMPARE WITH can't run without a SINCE window.", SqlErrorKind.Semantic, compare.Start, compare.Text.Length);
             }
 
             return Bound.Parse(with.Groups[1].Value, "COMPARE WITH", compare.Start + with.Groups[1].Index).Offset;
@@ -615,11 +610,11 @@ namespace SqlLinq.TimeSeries
         {
             if (!int.TryParse(limit.Text, NumberStyles.None, CultureInfo.InvariantCulture, out var n) || n < 1)
             {
-                throw new SqlException("LIMIT needs a positive whole number.", SqlErrorKind.Syntax, limit.Start, limit.Text.Length);
+                throw new SqlException("LIMIT " + limit.Text + " can't be used because it isn't a positive whole number.", SqlErrorKind.Syntax, limit.Start, limit.Text.Length);
             }
             if (Aggregated && Facets.Count == 0)
             {
-                throw new SqlException("LIMIT needs FACET (top facets) or a SELECT without aggregates (first rows).", SqlErrorKind.Semantic, limit.Start, limit.Text.Length);
+                throw new SqlException("LIMIT can't run without FACET when SELECT has aggregates.", SqlErrorKind.Semantic, limit.Start, limit.Text.Length);
             }
 
             return n;
@@ -637,7 +632,7 @@ namespace SqlLinq.TimeSeries
 
             if (text.Length == 0)
             {
-                column.Error = new SqlException("SELECT has an empty column.", SqlErrorKind.Syntax, start, column.Written.Length);
+                column.Error = new SqlException("SELECT can't be read because one of its columns is empty.", SqlErrorKind.Syntax, start, column.Written.Length);
             }
             else if (!Aggregated)
             {
@@ -649,7 +644,7 @@ namespace SqlLinq.TimeSeries
                 column.Columns = Array.Empty<string>();
                 if (!Facets.Any(f => f.Text.Equals(text, StringComparison.OrdinalIgnoreCase) || f.Name.Equals(unbracketed, StringComparison.OrdinalIgnoreCase)))
                 {
-                    column.Error = new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' isn't an aggregate. Alongside aggregates, plain columns must be FACET fields.", text), SqlErrorKind.Semantic, start, text.Length);
+                    column.Error = syntax.Error ?? new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' can't be selected alongside aggregates because it isn't an aggregate or a FACET field.", text), SqlErrorKind.Semantic, start, text.Length);
                 }
             }
             else if (syntax.Root == null)
@@ -660,7 +655,10 @@ namespace SqlLinq.TimeSeries
             {
                 column.Aggregates = TimeSeriesFunction.Calls(column.Expression, AggregateFactory<object>.Names);
                 column.Whole = column.Aggregates.Count == 1 && column.Aggregates[0] == column.Expression;
-                column.Error = Check(column);
+                var plain = syntax.Names.FirstOrDefault(n => !column.Aggregates.Any(a => n.Start >= a.Start && n.Start < a.Start + a.Length));
+                column.Error = plain != null
+                    ? new SqlException(string.Format(CultureInfo.CurrentCulture, "Arithmetic with aggregates can't use '{0}' because it isn't an aggregate.", plain.LookupId), SqlErrorKind.Semantic, plain.Start, plain.Length)
+                    : Check(column);
                 if (column.Whole && column.Expression is NodeWithId call && call.FunctionName.Equals("percentile", StringComparison.OrdinalIgnoreCase) && call.Arguments.Count > 2)
                 {
                     column.Columns = call.Arguments.Skip(1).Select(p => column.Alias != null ? column.Alias + "." + p.Text : string.Format(CultureInfo.CurrentCulture, "percentile({0}, {1})", call.Arguments[0].Text, p.Text)).ToList();
@@ -790,7 +788,19 @@ namespace SqlLinq.TimeSeries
         private static Dictionary<string, TimeSeriesClause> SplitClauses(string nrql, out string head, out SqlException error)
         {
             var clauses = new Dictionary<string, TimeSeriesClause>();
-            var keywords = ClauseKeyword.Matches(nrql).Where(m => m.Groups[1].Success).ToList();
+            var matches = ClauseKeyword.Matches(nrql).ToList();
+            var balanced = matches.Count(m => m.Value == "(") == matches.Count(m => m.Value == ")");
+            var depth = 0;
+            var keywords = new List<Match>();
+            foreach (var match in matches)
+            {
+                depth = Math.Max(0, depth + (match.Value == "(" ? 1 : match.Value == ")" ? -1 : 0));
+                if (match.Groups[1].Success && (depth == 0 || !balanced))
+                {
+                    keywords.Add(match);
+                }
+            }
+
             error = null;
 
             for (var i = 0; i < keywords.Count; i++)
@@ -798,7 +808,7 @@ namespace SqlLinq.TimeSeries
                 var keyword = keywords[i].Groups[1].Value.ToUpperInvariant();
                 if (keyword == "GROUP" || keyword == "HAVING" || keyword == "ORDER")
                 {
-                    error ??= new SqlException(keyword + " isn't supported in a time series query. Use FACET to group.", SqlErrorKind.Syntax, keywords[i].Index, keywords[i].Length);
+                    error ??= new SqlException(keyword + " can't be used in a time series query.", SqlErrorKind.Syntax, keywords[i].Index, keywords[i].Length);
                     continue;
                 }
 
@@ -809,7 +819,7 @@ namespace SqlLinq.TimeSeries
                 var textStart = start + text.Length - text.TrimStart().Length;
                 if (!clauses.TryAdd(keyword, new TimeSeriesClause(keyword, trimmed, textStart, keywords[i].Index, textStart + trimmed.Length - keywords[i].Index)))
                 {
-                    error ??= new SqlException("The query has more than one " + keyword + " clause.", SqlErrorKind.Syntax, keywords[i].Index, keywords[i].Length);
+                    error ??= new SqlException("The query can't be read because it has more than one " + keyword + " clause.", SqlErrorKind.Syntax, keywords[i].Index, keywords[i].Length);
                 }
             }
 

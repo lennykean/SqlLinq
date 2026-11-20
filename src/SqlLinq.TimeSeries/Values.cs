@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Threading;
-using LinqStatistics;
 
 namespace SqlLinq.TimeSeries
 {
@@ -16,58 +15,14 @@ namespace SqlLinq.TimeSeries
             return Convert.ToDouble(value, CultureInfo.InvariantCulture);
         }
 
-        public static object SampleStandardDeviation(IList<double> values)
-        {
-            if (values.Count < 2)
-            {
-                return null;
-            }
-
-            var mean = values.Average();
-            return Math.Sqrt(values.Sum(v => (v - mean) * (v - mean)) / (values.Count - 1));
-        }
-
-        public static object Percentile(IEnumerable<object> values, double p)
-        {
-            var sorted = values.Select(ToDouble).OrderBy(v => v).ToList();
-            if (sorted.Count == 0)
-            {
-                return null;
-            }
-
-            var rank = p / 100 * (sorted.Count - 1);
-            var lower = (int)Math.Floor(rank);
-            var upper = (int)Math.Ceiling(rank);
-
-            return sorted[lower] + (sorted[upper] - sorted[lower]) * (rank - lower);
-        }
-
         public static double ParsePercentile(string text)
         {
             if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var p) || p < 0 || p > 100)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a percentile between 0 and 100.", text), SqlErrorKind.Semantic);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} can't be used as a percentile because it isn't between 0 and 100.", text), SqlErrorKind.Semantic);
             }
 
             return p;
-        }
-
-        public static object Derivative(List<(TimeSpan Time, object Value)> points, double seconds)
-        {
-            var nonNumeric = points.Select(p => p.Value).FirstOrDefault(v => !IsNumeric(v));
-            if (nonNumeric != null)
-            {
-                throw new SqlException("Arithmetic requires numeric operands; received " + nonNumeric.GetType().Name + ".", SqlErrorKind.Evaluation);
-            }
-
-            if (points.Count < 2 || points.All(p => p.Time == points[0].Time))
-            {
-                return null;
-            }
-
-            var fit = points.Select(p => Tuple.Create((p.Time - points[0].Time).TotalSeconds, ToDouble(p.Value))).LeastSquares();
-
-            return fit.M * seconds;
         }
 
         public static List<(TimeSpan Time, T Item)> Read<T>(IEnumerable<T> source, Func<T, TimeSpan> time, CancellationToken cancellationToken)
@@ -79,14 +34,6 @@ namespace SqlLinq.TimeSeries
                     return (Time: time(item), Item: item);
                 })
                 .ToList();
-        }
-
-        public static IEnumerable<long> Buckets(long first, long last)
-        {
-            for (var bucket = first; bucket <= last; bucket++)
-            {
-                yield return bucket;
-            }
         }
 
         public static object SortKey(object value)

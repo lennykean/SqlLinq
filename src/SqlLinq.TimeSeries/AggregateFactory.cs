@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
+using LinqStatistics;
+using MathNet.Numerics.Statistics;
 using SqlLinq.SyntaxTree;
 using SqlLinq.SyntaxTree.Expressions;
 
@@ -26,6 +28,8 @@ namespace SqlLinq.TimeSeries
             "rate",
             "derivative"
         };
+
+        private static readonly HashSet<string> Numeric = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "sum", "average", "avg", "stddev", "median", "percentile", "derivative" };
 
         private static readonly Type Row = typeof((TimeSpan Time, T Item));
 
@@ -62,30 +66,30 @@ namespace SqlLinq.TimeSeries
                     {
                         return (rows, window) => Boxed(Call(nameof(Enumerable.Count), Row, rows));
                     }
-                    return Over(name, args, first, values => Boxed(Call(nameof(Enumerable.Count), typeof(object), values)));
+                    return Over(name, args, first, values => Boxed(Call(nameof(Enumerable.Count), Element(values), values)));
                 case "uniquecount":
-                    return Over(name, args, first, values => Boxed(Call(nameof(Enumerable.Count), typeof(object), Call(nameof(Enumerable.Distinct), typeof(object), values))));
+                    return Over(name, args, first, values => Boxed(Call(nameof(Enumerable.Count), Element(values), Call(nameof(Enumerable.Distinct), Element(values), values))));
                 case "sum":
-                    return Over(name, args, first, values => Boxed(Call(nameof(Enumerable.Sum), typeof(object), values, Doubles())));
+                    return Over(name, args, first, values => Boxed(Call(nameof(Enumerable.Sum), Element(values), values, Doubles(Element(values)))));
                 case "average":
                 case "avg":
-                    return Over(name, args, first, values => UnlessEmpty(values, Boxed(Call(nameof(Enumerable.Average), typeof(object), values, Doubles()))));
+                    return Over(name, args, first, values => UnlessEmpty(values, Boxed(Call(nameof(Enumerable.Average), Element(values), values, Doubles(Element(values))))));
                 case "min":
-                    return Over(name, args, first, values => UnlessEmpty(values, Call(nameof(Enumerable.Aggregate), typeof(object), values, Best(Expression.LessThan))));
+                    return Over(name, args, first, values => UnlessEmpty(values, Element(values) == typeof(object) ? Call(nameof(Enumerable.Aggregate), typeof(object), values, Best(Expression.LessThan)) : (Expression)Boxed(Call(nameof(Enumerable.Min), Element(values), values))));
                 case "max":
-                    return Over(name, args, first, values => UnlessEmpty(values, Call(nameof(Enumerable.Aggregate), typeof(object), values, Best(Expression.GreaterThan))));
+                    return Over(name, args, first, values => UnlessEmpty(values, Element(values) == typeof(object) ? Call(nameof(Enumerable.Aggregate), typeof(object), values, Best(Expression.GreaterThan)) : (Expression)Boxed(Call(nameof(Enumerable.Max), Element(values), values))));
                 case "stddev":
-                    return Over(name, args, first, values => Expression.Call(typeof(Values), nameof(Values.SampleStandardDeviation), null, Call(nameof(Enumerable.ToList), typeof(double), Call(nameof(Enumerable.Select), new[] { typeof(object), typeof(double) }, values, Doubles()))));
+                    return Over(name, args, first, values => Expression.Condition(Expression.Not(Call(nameof(Enumerable.Any), Element(values), Call(nameof(Enumerable.Skip), Element(values), values, Expression.Constant(1)))), Expression.Constant(null), Boxed(Expression.Call(typeof(EnumerableStats), nameof(EnumerableStats.StandardDeviation), null, Call(nameof(Enumerable.Select), new[] { Element(values), typeof(double) }, values, Doubles(Element(values)))))));
                 case "median":
-                    return Over(name, args, first, values => Expression.Call(typeof(Values), nameof(Values.Percentile), null, values, Expression.Constant(50d)));
+                    return Over(name, args, first, values => Percentile(values, 50d));
                 case "percentile":
                     if (args.Count != 2)
                     {
-                        throw new SqlException("percentile takes (value, percentile) here, e.g. percentile(RPM, 95).", SqlErrorKind.Semantic);
+                        throw new SqlException("percentile can't be calculated because here it takes 2 arguments, not " + arguments.Count + ".", SqlErrorKind.Semantic);
                     }
                     var percentile = Values.ParsePercentile(args[1]);
 
-                    return Over(name, args.Take(1).ToList(), first, values => Expression.Call(typeof(Values), nameof(Values.Percentile), null, values, Expression.Constant(percentile)));
+                    return Over(name, args.Take(1).ToList(), first, values => Percentile(values, percentile));
                 case "latest":
                     return ByTime(name, args, first, Expression.GreaterThanOrEqual);
                 case "earliest":
@@ -95,23 +99,37 @@ namespace SqlLinq.TimeSeries
                 case "derivative":
                     return Derivative(args, arguments);
             }
-            throw new SqlException(name + " isn't an aggregate function.", SqlErrorKind.UnknownName);
+            throw new SqlException(name + " can't be calculated because it isn't an aggregate function.", SqlErrorKind.UnknownName);
         }
 
         private Aggregate Over(string name, List<string> args, ArgumentNode first, Func<Expression, Expression> aggregate)
         {
             if (args.Count != 1 || args[0].Length == 0)
             {
-                throw new SqlException(name + " takes one value, e.g. " + name + "(RPM).", SqlErrorKind.Semantic);
+                throw new SqlException(name + " can't be calculated because it takes 1 argument, not " + (first == null ? 0 : args.Count) + ".", SqlErrorKind.Semantic);
             }
 
-            var value = _compile(first);
+            var value = Numbers(name, first, _compile(first));
             return (rows, window) =>
             {
-                var values = Expression.Variable(typeof(IEnumerable<object>), "values");
+                var typed = value.Body is UnaryExpression boxed && boxed.NodeType == ExpressionType.Convert ? boxed.Operand : value.Body;
+                var element = Nullable.GetUnderlyingType(typed.Type) ?? typed.Type;
+                if (element.IsEnum || Type.GetTypeCode(element) < TypeCode.SByte || Type.GetTypeCode(element) > TypeCode.Decimal)
+                {
+                    typed = value.Body;
+                    element = typeof(object);
+                }
+
+                var values = Expression.Variable(typeof(IEnumerable<>).MakeGenericType(element), "values");
                 var row = Expression.Parameter(Row, "row");
-                var selected = Call(nameof(Enumerable.Select), new[] { Row, typeof(object) }, rows, Expression.Lambda(TimeSeriesQueryTree<T>.Inline(value, Expression.Field(row, "Item2")), row));
-                var present = Call(nameof(Enumerable.OfType), typeof(object), selected);
+                var selected = Call(nameof(Enumerable.Select), new[] { Row, typed.Type }, rows, Expression.Lambda(TimeSeriesQueryTree<T>.Inline(Expression.Lambda(typed, value.Parameters), Expression.Field(row, "Item2")), row));
+                var present = element == typeof(object) ? Call(nameof(Enumerable.OfType), typeof(object), selected) : selected;
+                if (typed.Type != element)
+                {
+                    var nullable = Expression.Parameter(typed.Type, "value");
+                    var known = Call(nameof(Enumerable.Where), typed.Type, selected, Expression.Lambda(Expression.NotEqual(nullable, Expression.Constant(null, typed.Type)), nullable));
+                    present = Call(nameof(Enumerable.Select), new[] { typed.Type, element }, known, Expression.Lambda(Expression.Property(nullable, nameof(Nullable<int>.Value)), nullable));
+                }
 
                 return Expression.Block(new[] { values }, Expression.Assign(values, present), aggregate(values));
             };
@@ -121,7 +139,7 @@ namespace SqlLinq.TimeSeries
         {
             if (args.Count != 1)
             {
-                throw new SqlException(name + " takes one value, e.g. " + name + "(ECT).", SqlErrorKind.Semantic);
+                throw new SqlException(name + " can't be calculated because it takes 1 argument, not " + args.Count + ".", SqlErrorKind.Semantic);
             }
 
             var value = _compile(first);
@@ -144,7 +162,7 @@ namespace SqlLinq.TimeSeries
             var call = args.Count == 2 ? arguments[0].Expression as NodeWithId : null;
             if (call == null || !(call.Function is TimeSeriesFunction) || !Names.Contains(call.FunctionName))
             {
-                throw new SqlException("rate takes (aggregate, duration), e.g. rate(count(*), 1 second).", SqlErrorKind.Semantic);
+                throw new SqlException(args.Count != 2 ? "rate can't be calculated because it takes 2 arguments, not " + arguments.Count + "." : "rate can't be calculated because its first argument, " + args[0] + ", isn't an aggregate.", SqlErrorKind.Semantic);
             }
 
             var inner = Create(call);
@@ -152,7 +170,7 @@ namespace SqlLinq.TimeSeries
             var per = Bound.Parse(args[1], "rate", arguments[1].Start).Offset.Ticks;
             if (per <= 0)
             {
-                throw new SqlException("rate needs a positive duration, e.g. rate(count(*), 1 second).", SqlErrorKind.Semantic);
+                throw new SqlException("rate can't be calculated because its second argument, " + args[1] + ", isn't a positive duration.", SqlErrorKind.Semantic);
             }
 
             return (rows, window) =>
@@ -169,19 +187,50 @@ namespace SqlLinq.TimeSeries
         {
             if (args.Count != 2 || args[0].Length == 0)
             {
-                throw new SqlException("derivative takes (value, duration), e.g. derivative(RPM, 1 second).", SqlErrorKind.Semantic);
+                throw new SqlException(args.Count != 2 ? "derivative can't be calculated because it takes 2 arguments, not " + arguments.Count + "." : "derivative can't be calculated because its first argument is empty.", SqlErrorKind.Semantic);
             }
 
             var per = Bound.Parse(args[1], "derivative", arguments[1].Start);
             if (per.Ago || per.Offset <= TimeSpan.Zero)
             {
-                throw new SqlException("derivative needs a positive duration, e.g. derivative(RPM, 1 second).", SqlErrorKind.Semantic);
+                throw new SqlException("derivative can't be calculated because its second argument, " + args[1] + ", isn't a positive duration.", SqlErrorKind.Semantic);
             }
 
-            var value = _compile(arguments[0]);
+            var value = Numbers("derivative", arguments[0], _compile(arguments[0]));
             var seconds = per.Offset.TotalSeconds;
 
-            return (rows, window) => Expression.Call(typeof(Values), nameof(Values.Derivative), null, Call(nameof(Enumerable.ToList), Point, Points(rows, value)), Expression.Constant(seconds));
+            return (rows, window) =>
+            {
+                var points = Expression.Variable(typeof(List<(TimeSpan Time, object Value)>), "points");
+                var point = Expression.Parameter(Point, "point");
+                var start = Expression.Field(Expression.Property(points, "Item", Expression.Constant(0)), "Item1");
+                var xy = Expression.Call(typeof(Tuple), nameof(Tuple.Create), new[] { typeof(double), typeof(double) }, Expression.Property(Expression.Subtract(Expression.Field(point, "Item1"), start), nameof(TimeSpan.TotalSeconds)), ToDouble(Expression.Field(point, "Item2")));
+                var fit = Expression.Call(typeof(EnumerableStats), nameof(EnumerableStats.LeastSquares), null, Call(nameof(Enumerable.Select), new[] { Point, xy.Type }, points, Expression.Lambda(xy, point)));
+                var single = Call(nameof(Enumerable.All), Point, points, Expression.Lambda(Expression.Equal(Expression.Field(point, "Item1"), start), point));
+
+                return Expression.Block(new[] { points }, Expression.Assign(points, Call(nameof(Enumerable.ToList), Point, Points(rows, value))), Expression.Condition(single, Expression.Constant(null), Boxed(Expression.Multiply(Expression.Property(fit, nameof(LeastSquares.M)), Expression.Constant(seconds)))));
+            };
+        }
+
+        private static ConditionalExpression Percentile(Expression values, double p)
+        {
+            var value = Expression.Parameter(typeof(double), "value");
+            var sorted = Call(nameof(Enumerable.OrderBy), new[] { typeof(double), typeof(double) }, Call(nameof(Enumerable.Select), new[] { Element(values), typeof(double) }, values, Doubles(Element(values))), Expression.Lambda(value, value));
+
+            return UnlessEmpty(values, Boxed(Expression.Call(typeof(SortedArrayStatistics), nameof(SortedArrayStatistics.QuantileCustom), null, Call(nameof(Enumerable.ToArray), typeof(double), sorted), Expression.Constant(p / 100), Expression.Constant(QuantileDefinition.R7))));
+        }
+
+        private static Expression<Func<T, object>> Numbers(string name, ArgumentNode argument, Expression<Func<T, object>> value)
+        {
+            var type = value?.Body is UnaryExpression boxed && boxed.NodeType == ExpressionType.Convert ? boxed.Operand.Type : typeof(object);
+            type = Nullable.GetUnderlyingType(type) ?? type;
+            var code = Type.GetTypeCode(type);
+            if (Numeric.Contains(name) && type != typeof(object) && !type.IsAbstract && code != TypeCode.Boolean && code != TypeCode.String && (code < TypeCode.SByte || code > TypeCode.Decimal))
+            {
+                throw new SqlException("Arithmetic can't use " + type.Name + " values because they aren't numbers.", SqlErrorKind.Semantic, argument.Start, argument.Length);
+            }
+
+            return value;
         }
 
         private static MethodCallExpression Points(Expression rows, LambdaExpression value)
@@ -203,11 +252,16 @@ namespace SqlLinq.TimeSeries
             return Expression.Lambda(Expression.Condition(keep(compare, Expression.Constant(0)), value, best), best, value);
         }
 
-        private static LambdaExpression Doubles()
+        private static LambdaExpression Doubles(Type type)
         {
-            var value = Expression.Parameter(typeof(object), "value");
+            var value = Expression.Parameter(type, "value");
 
-            return Expression.Lambda(ToDouble(value), value);
+            return Expression.Lambda(type == typeof(object) ? ToDouble(value) : Expression.Convert(value, typeof(double)), value);
+        }
+
+        private static Type Element(Expression values)
+        {
+            return values.Type.GetGenericArguments()[0];
         }
 
         internal static Expression ToDouble(Expression value)
@@ -217,7 +271,7 @@ namespace SqlLinq.TimeSeries
 
         private static ConditionalExpression UnlessEmpty(Expression values, Expression value)
         {
-            return Expression.Condition(Expression.Not(Call(nameof(Enumerable.Any), typeof(object), values)), Expression.Constant(null), value);
+            return Expression.Condition(Expression.Not(Call(nameof(Enumerable.Any), Element(values), values)), Expression.Constant(null), value);
         }
 
         private static UnaryExpression Boxed(Expression value)

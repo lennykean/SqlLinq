@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
@@ -49,44 +48,38 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             var left = CreateChildExpression(sourceData, param, 0);
             var results = TupleSelectNode.CreateResults(Subquery, sourceData, param);
             var key = left.Type.KeyType(QueryTree.ElementOf(results.Type));
+            if (key == null && left.Type != typeof(object) && QueryTree.ElementOf(results.Type) != typeof(object))
+            {
+                Compiled(() => Test(left, Expression.Parameter(QueryTree.ElementOf(results.Type))));
+            }
+
             if (key == null)
             {
-                var body = Expression.Call(
-                    typeof(QuantifiedComparisonNode),
-                    nameof(Compare),
-                    null,
-                    Expression.Convert(left, typeof(object)),
-                    TupleSelectNode.CreateUntypedValues(Subquery, results),
-                    Expression.Constant(Test()),
-                    Expression.Constant(All));
+                var untyped = TupleSelectNode.CreateUntypedValues(Subquery, results);
+                var boxed = Expression.Call(typeof(SourcesExtensions), nameof(SourcesExtensions.KeyOf), null, Expression.Convert(left, typeof(object)));
 
-                return TupleSelectNode.Guard(body);
+                return TupleSelectNode.Guard(QueryTree.Bind(boxed, bound => Quantified(untyped, bound, typeof(object))));
             }
 
             var keys = QueryTree.Select(results, QueryTree.ElementOf(results.Type), key, row => ExpressionFactory.ToKey(row, key));
             var values = QueryTree.Materialize(Subquery, Expression.Call(typeof(Enumerable), nameof(Enumerable.ToList), new[] { key }, keys));
             var value = ExpressionFactory.ToKey(left, key);
 
-            return QueryTree.Simple(left) ? Typed(values, value, key) : QueryTree.Bind(value, bound => Typed(values, bound, key));
+            return QueryTree.Simple(left) ? Quantified(values, value, key) : QueryTree.Bind(value, bound => Quantified(values, bound, key));
         }
 
-        private Expression Typed(Expression values, Expression value, Type key)
+        private MethodCallExpression Quantified(Expression values, Expression value, Type key)
         {
-            return QueryTree.Bind(values, list =>
+            var tests = QueryTree.Select(values, key, typeof(bool?), candidate =>
             {
-                var known = QueryTree.Where(list, key, v => Expression.NotEqual(v, Expression.Constant(null, key)));
-                var candidate = Expression.Parameter(key, "candidate");
-                var test = Expression.Lambda(Expression.GetFuncType(key, typeof(bool)), Test(value, candidate), candidate);
-                var matches = Expression.Call(typeof(Enumerable), All ? nameof(Enumerable.All) : nameof(Enumerable.Any), new[] { key }, known, test);
-                var satisfied = All
-                    ? Expression.AndAlso(Expression.Not(Expression.Call(typeof(Enumerable), nameof(Enumerable.Contains), new[] { key }, list, Expression.Constant(null, key))), matches)
-                    : (Expression)matches;
+                var compared = key == typeof(object) ? PredicateExpressionNode.Known(Expression.Invoke(Expression.Constant(Test()), value, candidate), value, candidate) : Test(value, candidate);
 
-                return Expression.Condition(
-                    Expression.Not(Expression.Call(typeof(Enumerable), nameof(Enumerable.Any), new[] { key }, list)),
-                    Expression.Constant(All),
-                    Expression.AndAlso(Expression.NotEqual(value, Expression.Constant(null, key)), satisfied));
+                return compared.Type == typeof(bool?) ? compared : Expression.Convert(compared, typeof(bool?));
             });
+            var result = Expression.Parameter(typeof(bool?), "result");
+            var test = Expression.Parameter(typeof(bool?), "test");
+
+            return Expression.Call(typeof(Enumerable), nameof(Enumerable.Aggregate), new[] { typeof(bool?), typeof(bool?) }, tests, Expression.Constant(All, typeof(bool?)), Expression.Lambda(All ? Expression.And(result, test) : Expression.Or(result, test), result, test));
         }
 
         private Expression Test(Expression left, Expression right)
@@ -94,10 +87,10 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             switch ((RuleConstants)Rule.Index)
             {
                 case RuleConstants.RULE_PREDEXP_EQ_LPAREN_RPAREN:
-                    return Expression.Equal(left, right);
+                    return PredicateExpressionNode.Known(Expression.Equal(left, right), left, right);
                 case RuleConstants.RULE_PREDEXP_LTGT_LPAREN_RPAREN:
                 case RuleConstants.RULE_PREDEXP_EXCLAMEQ_LPAREN_RPAREN:
-                    return Expression.NotEqual(left, right);
+                    return PredicateExpressionNode.Known(Expression.NotEqual(left, right), left, right);
                 case RuleConstants.RULE_PREDEXP_GT_LPAREN_RPAREN:
                     return PredicateExpressionNode.Compare(left, right, Expression.GreaterThan);
                 case RuleConstants.RULE_PREDEXP_GTEQ_LPAREN_RPAREN:
@@ -131,24 +124,6 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             }
         }
 
-        private static bool Compare(object value, HashSet<object> values, Func<object, object, bool> test, bool all)
-        {
-            if (values.Count == 0)
-            {
-                return all;
-            }
-
-            if (value == null)
-            {
-                return false;
-            }
-
-            var key = SourcesExtensions.KeyOf(value);
-            var known = values.Where(v => v != null);
-
-            return all ? !values.Contains(null) && known.All(v => test(key, v)) : known.Any(v => test(key, v));
-        }
-
         internal static int Order(object left, object right)
         {
             if (left is string text && right is string other)
@@ -161,7 +136,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
                 return comparable.CompareTo(right);
             }
 
-            throw new InvalidOperationException(string.Format(CultureInfo.CurrentCulture, "{0} and {1} can't be compared.", left, right));
+            throw new InvalidOperationException(string.Format(CultureInfo.CurrentCulture, "{0} and {1} can't be compared without a common type.", left, right));
         }
     }
 }

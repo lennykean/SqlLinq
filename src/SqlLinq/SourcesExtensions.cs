@@ -116,7 +116,7 @@ namespace SqlLinq
 
             if (!(syntax.Root is SelectNode) && !(syntax.Root is UnionNode))
             {
-                throw new InvalidOperationException("The syntax tree is an expression; compile it with SqlExpression.Compile.");
+                throw new InvalidOperationException("The syntax tree can't be compiled as a query because it's an expression.");
             }
 
             var copy = syntax.Root.Copy();
@@ -156,15 +156,15 @@ namespace SqlLinq
             bool requireJoin,
             bool elementType)
         {
-            var members = select?.FromClause == null ? new List<(string Name, string Alias)>() : select.FromClause.Members;
+            var members = select?.FromClause == null ? new List<(string Name, string Alias, SyntaxNode Node)>() : select.FromClause.Members;
             var joins = select?.FromClause == null ? new List<Join>() : select.FromClause.FindDescendants<Join>().ToList();
 
             if (requireJoin && joins.Count == 0)
             {
-                throw new SqlException("The query does not contain a JOIN expression\n" + sql, SqlErrorKind.Semantic);
+                throw new SqlException("The query can't join two sources without a JOIN expression\n" + sql, SqlErrorKind.Semantic);
             }
 
-            if (joins.Count == 0 && (members.Count <= 1 || sources.Count == 1))
+            if (joins.Count == 0 && (members.Count <= 1 || sources.Count == 1 && ThisAndThat(sources)))
             {
                 var source = members.Count == 0 ? sources.First() : Resolve(sources, members[0], "this", sources.Count == 1);
                 if (members.Count == 0 || members[0].Alias == null)
@@ -187,16 +187,21 @@ namespace SqlLinq
 
         private static void Scope(Dictionary<string, IEnumerable> sources, SelectNode select, string key)
         {
-            foreach (var subquery in select.FindDescendants<SelectNode>().Where(s => s.EnclosingSelect() == select))
+            foreach (var subquery in select.Subqueries().Where(s => s.EnclosingSelect() == select))
             {
+                if (subquery.FromClause.Members.Count > 1 || subquery.FromClause.FindDescendants<Join>().Any())
+                {
+                    throw new SqlException("The subquery can't join its sources because a subquery reads only one source.", SqlErrorKind.Semantic, subquery.Start, subquery.Length);
+                }
+
                 var table = Resolve(sources, subquery.FromClause.Members[0], "this", sources.Count == 1);
                 if (subquery.FromClause.Members[0].Alias == null)
                 {
                     subquery.Names.Add(table.Key);
                 }
 
-                var wholeTable = select.Columns.FindDescendants<SelectNode>().Contains(subquery)
-                    || select.HavingClause != null && select.HavingClause.FindDescendants<SelectNode>().Contains(subquery);
+                var wholeTable = select.Columns.Subqueries().Contains(subquery)
+                    || select.HavingClause != null && select.HavingClause.Subqueries().Contains(subquery);
                 if (table.Key != key || wholeTable)
                 {
                     subquery.Source = table.Value;
@@ -254,7 +259,7 @@ namespace SqlLinq
 
         private static JoinLayout Layout(
             Dictionary<string, IEnumerable> sources,
-            List<(string Name, string Alias)> members,
+            List<(string Name, string Alias, SyntaxNode Node)> members,
             List<Join> joins,
             HashSet<string> scope)
         {
@@ -275,7 +280,7 @@ namespace SqlLinq
                 var joinedMembers = FromClause.Of(join.Children.OfType<NonTerminalNode>().First());
                 if (joinedMembers.Count != 1)
                 {
-                    throw new SqlException("JOIN takes one source. Use another JOIN for each other source.", SqlErrorKind.Semantic);
+                    throw new SqlException("JOIN can't run because it has more than one source.", SqlErrorKind.Semantic, join.Start, join.Length);
                 }
 
                 var joined = Add(sources, joinedMembers[0], aliases, names);
@@ -293,13 +298,13 @@ namespace SqlLinq
 
         private static IEnumerable Add(
             Dictionary<string, IEnumerable> sources,
-            (string Name, string Alias) member,
+            (string Name, string Alias, SyntaxNode Node) member,
             HashSet<string> aliases,
             List<HashSet<string>> names)
         {
             if (!aliases.Add(member.Alias ?? member.Name))
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} is joined more than once. Give each join its own alias.", member.Alias ?? member.Name), SqlErrorKind.Semantic);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} can't be joined more than once without a different alias.", member.Alias ?? member.Name), SqlErrorKind.Semantic, member.Node.Start, member.Node.Length);
             }
 
             var joined = Resolve(sources, member, "that", false);
@@ -308,7 +313,7 @@ namespace SqlLinq
             return joined.Value;
         }
 
-        private static KeyValuePair<string, IEnumerable> Resolve(Dictionary<string, IEnumerable> sources, (string Name, string Alias) member, string fallback, bool onlyOne)
+        private static KeyValuePair<string, IEnumerable> Resolve(Dictionary<string, IEnumerable> sources, (string Name, string Alias, SyntaxNode Node) member, string fallback, bool onlyOne)
         {
             var source = sources.FirstOrDefault(s => s.Key.Equals(member.Alias, StringComparison.OrdinalIgnoreCase) || s.Key.Equals(member.Name, StringComparison.OrdinalIgnoreCase));
             if (source.Key != null)
@@ -316,21 +321,26 @@ namespace SqlLinq
                 return source;
             }
 
-            if (onlyOne)
+            if (onlyOne && ThisAndThat(sources))
             {
                 return sources.First();
             }
 
             source = sources.FirstOrDefault(s => s.Key.Equals(fallback, StringComparison.OrdinalIgnoreCase));
-            if (source.Key != null)
+            if (source.Key != null && ThisAndThat(sources))
             {
                 return source;
             }
 
-            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' isn't one of the sources: {1}.", member.Name, string.Join(", ", sources.Keys)), SqlErrorKind.UnknownName);
+            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "'{0}' can't be read because it isn't one of the sources: {1}.", member.Name, string.Join(", ", sources.Keys)), SqlErrorKind.UnknownName, member.Node.Start, member.Node.Length);
         }
 
-        private static HashSet<string> Names(string key, (string Name, string Alias) member)
+        private static bool ThisAndThat(Dictionary<string, IEnumerable> sources)
+        {
+            return sources.Keys.All(k => k.Equals("this", StringComparison.OrdinalIgnoreCase) || k.Equals("that", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static HashSet<string> Names(string key, (string Name, string Alias, SyntaxNode Node) member)
         {
             return member.Alias == null
                 ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) { key, member.Name }
@@ -350,14 +360,14 @@ namespace SqlLinq
             if (leftInner != rightInner)
             {
                 var (innerSide, outerSide) = leftInner ? (left, right) : (right, left);
-                var outer = outerSide.Alias == null ? 0 : earlier.FindIndex(n => n.Contains(outerSide.Alias));
-                if (outer >= 0)
+                var outer = outerSide.Alias == null ? -1 : earlier.FindIndex(n => n.Contains(outerSide.Alias));
+                if (outerSide.Alias == null || outer >= 0)
                 {
                     return (outer, outerSide.Field, innerSide.Field);
                 }
             }
 
-            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "JOIN ON {0} = {1} must compare a field of the joined source with a field of an earlier source.", on[0], on[1]), SqlErrorKind.Semantic);
+            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "JOIN ON {0} = {1} can't run because it doesn't compare a field of the joined source with a field of an earlier source.", on[0], on[1]), SqlErrorKind.Semantic, join.Start, join.Length);
         }
 
         private static (string Alias, string Field) Side(string text, List<HashSet<string>> names)

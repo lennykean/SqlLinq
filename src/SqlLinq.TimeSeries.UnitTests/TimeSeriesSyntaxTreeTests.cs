@@ -359,6 +359,22 @@ namespace SqlLinq.TimeSeries.UnitTests
         }
 
         [TestMethod]
+        public void BindReadsAQueryParsedWithoutItsFunctions()
+        {
+            // Arrange
+            const string Nrql = "SELECT max(twice(DriveSpin)) AS M, count(*) AS N FROM shipslog WHERE twice(DriveStage) > 2 FACET twice(DriveStage)";
+            var parsed = TimeSeriesSyntaxTree.Parse(Nrql, Functions);
+
+            // Act
+            var bound = TimeSeriesSyntaxTree.Parse(Nrql).Bind(Functions);
+
+            // Assert
+            Assert.IsNull(bound.Error);
+            Assert.AreEqual(Describe(parsed), Describe(bound));
+            Assert.AreEqual(Run(parsed), Run(bound));
+        }
+
+        [TestMethod]
         public void ParsedFacetCompilesAndLabelsAsItsText()
         {
             // Arrange
@@ -501,7 +517,7 @@ namespace SqlLinq.TimeSeries.UnitTests
             Assert.AreEqual(nrql.Substring(nrql.IndexOf("/*", StringComparison.Ordinal)), nrql.Substring(syntax.Error.Start, syntax.Error.Length));
             Assert.AreEqual(SqlErrorKind.UnterminatedComment, syntax.Error.Kind);
             Assert.AreEqual(core.Message, syntax.Error.Message);
-            Assert.AreEqual(nrql.Length + "/0", core.Start + "/" + core.Length);
+            Assert.AreEqual(syntax.Error.Start + "/" + syntax.Error.Length, core.Start + "/" + core.Length);
             Assert.AreEqual(syntax.Error.Message, thrown.Message);
             Assert.AreEqual(SqlTokenKind.Comment, syntax.Tokens[^1].Kind);
         }
@@ -592,6 +608,19 @@ namespace SqlLinq.TimeSeries.UnitTests
         }
 
         [TestMethod]
+        [DataRow("SELECT max(DriveSpin) + (pi() FROM shipslog", "(pi()")]
+        [DataRow("SELECT count(*) FROM shipslog WHERE (round(DriveSpin, 1) > 1 FACET Quantum", "(round(DriveSpin, 1) > 1")]
+        public void UnbalancedParenthesesAroundCallsAreErrorsAtTheirText(string nrql, string text)
+        {
+            // Act
+            var error = TimeSeriesSyntaxTree.Parse(nrql).Error;
+
+            // Assert
+            Assert.AreEqual(SqlErrorKind.UnbalancedParentheses, error.Kind);
+            Assert.AreEqual(text, nrql.Substring(error.Start, error.Length));
+        }
+
+        [TestMethod]
         public void RunAndDurationErrorsSayWhatTheyAre()
         {
             // Arrange
@@ -649,7 +678,7 @@ namespace SqlLinq.TimeSeries.UnitTests
 
             // Assert
             Assert.AreEqual("SELECT count(*) FROM shipslog SINCE 3 SINCE 2", replaced.ToSql());
-            Assert.AreEqual("The query has more than one SINCE clause.", replaced.Error.Message);
+            Assert.AreEqual("The query can't be read because it has more than one SINCE clause.", replaced.Error.Message);
             Assert.AreEqual("SELECT count(*) FROM shipslog SINCE 2", removed.ToSql());
             Assert.IsNull(removed.Error);
             Assert.AreEqual(TimeSpan.FromSeconds(2), removed.Since.Offset);
@@ -692,6 +721,7 @@ namespace SqlLinq.TimeSeries.UnitTests
         [DataRow("SELECT count(*) FROM shipslog FACET nofunc(DriveSpin)")]
         [DataRow("SELECT max(nofunc(DriveSpin)) FROM shipslog")]
         [DataRow("SELECT count(*) FROM shipslog FACET buckets(nofunc(DriveSpin), 10, 2)")]
+        [DataRow("SELECT count(*), nofunc(DriveSpin) FROM shipslog")]
         public void UnknownFunctionIsAnUnknownNameAtItsName(string nrql)
         {
             // Act

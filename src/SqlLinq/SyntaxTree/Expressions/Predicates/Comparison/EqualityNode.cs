@@ -1,6 +1,4 @@
-﻿using System;
-using System.Reflection;
-using System.Linq.Expressions;
+﻿using System.Linq.Expressions;
 
 namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 {
@@ -18,12 +16,12 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
                 return Expression.Call(typeof(EqualityNode), nameof(ValuesEqual), null, left, right);
             }
 
-            return Expression.Equal(left, right);
+            return Known(Expression.Equal(left, right), left, right);
         }
 
-        internal static bool ValuesEqual(object left, object right)
+        internal static bool? ValuesEqual(object left, object right)
         {
-            return Equals(SourcesExtensions.KeyOf(left), SourcesExtensions.KeyOf(right));
+            return left == null || right == null ? (bool?)null : Equals(SourcesExtensions.KeyOf(left), SourcesExtensions.KeyOf(right));
         }
     }
 }

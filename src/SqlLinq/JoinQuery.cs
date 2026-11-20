@@ -16,7 +16,7 @@ namespace SqlLinq
         protected override void OnCompile()
         {
             if (((SelectNode)Syntax.Root).FromClause.Join == null)
-                throw new SqlException("The query does not contain a JOIN expression\n" + Sql, SqlErrorKind.Semantic);
+                throw new SqlException("The query can't join two sources without a JOIN expression\n" + Sql, SqlErrorKind.Semantic);
         }
 
         public IEnumerable<TResult> Evaluate(IEnumerable<TSource> source, IEnumerable<TInner> inner)

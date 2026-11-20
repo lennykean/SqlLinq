@@ -20,8 +20,10 @@ namespace SqlLinq
         public static IEnumerable<string> ColumnNames(this Type type)
         {
             return type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Concat(type.IsInterface ? type.GetInterfaces().SelectMany(i => i.GetProperties()) : Enumerable.Empty<PropertyInfo>())
                 .Where(p => p.GetIndexParameters().Length == 0)
                 .Select(p => p.Name)
+                .Distinct()
                 .Concat(type.GetFields(BindingFlags.Public | BindingFlags.Instance).Select(f => f.Name));
         }
 
@@ -82,7 +84,7 @@ namespace SqlLinq
 
         public static MemberInfo GetPropertyOrField(this Type type, string name)
         {
-            MemberInfo member = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            MemberInfo member = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance) ?? type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
             return (member ?? type.GetField(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)) ?? type.GetInterfaces().Select(i => i.GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)).FirstOrDefault(p => p != null);
         }
 
@@ -169,21 +171,23 @@ namespace SqlLinq
 
         internal static Type Lifted(this Type widest, params Type[] types)
         {
-            var nullable = types.Any(t => Nullable.GetUnderlyingType(t) != null);
+            var nullable = types.Any(t => Nullable.GetUnderlyingType(t) != null || t == typeof(object));
 
             return nullable && widest.IsValueType && Nullable.GetUnderlyingType(widest) == null ? typeof(Nullable<>).MakeGenericType(widest) : widest;
         }
 
         public static Type Widest(this Type type, Type other)
         {
-            if (type == other)
+            if (type == other && !type.PromotesToInt())
                 return type;
 
             if (type == typeof(string) || other == typeof(string))
                 return typeof(string);
 
             if (type == typeof(object))
-                return typeof(double);
+            {
+                return other.Widest(type);
+            }
 
             if (other == typeof(object) && type.IsPrimitive && type != typeof(bool) && type != typeof(char))
                 return typeof(double);
@@ -215,32 +219,23 @@ namespace SqlLinq
                 return typeof(decimal);
             }
 
+            if (type == typeof(float) || other == typeof(float))
+                return typeof(float);
+
+            if ((type == typeof(ulong) || other == typeof(ulong)) && (type == typeof(long) || other == typeof(long) || type == typeof(int) || other == typeof(int) || type == typeof(short) || other == typeof(short) || type == typeof(sbyte) || other == typeof(sbyte)))
+                return typeof(decimal);
+
             if (type == typeof(long) || other == typeof(long))
                 return typeof(long);
 
             if (type == typeof(ulong) || other == typeof(ulong))
                 return typeof(ulong);
 
-            if (type == typeof(float) || other == typeof(float))
-                return typeof(float);
-
-            if (type == typeof(int) || other == typeof(int))
-                return typeof(int);
-
             if (type == typeof(uint) || other == typeof(uint))
-                return typeof(uint);
+                return type == typeof(int) || other == typeof(int) || type == typeof(short) || other == typeof(short) || type == typeof(sbyte) || other == typeof(sbyte) ? typeof(long) : typeof(uint);
 
-            if (type == typeof(short) || other == typeof(short))
-                return typeof(short);
-
-            if (type == typeof(ushort) || other == typeof(ushort))
-                return typeof(ushort);
-
-            if (type == typeof(sbyte) || other == typeof(sbyte))
-                return typeof(sbyte);
-
-            if (type == typeof(byte) || other == typeof(byte))
-                return typeof(byte);
+            if (type == typeof(int) || other == typeof(int) || type.PromotesToInt() || other.PromotesToInt())
+                return typeof(int);
 
             if (type == typeof(bool) || other == typeof(bool))
                 return typeof(bool);
@@ -249,6 +244,13 @@ namespace SqlLinq
                 return type;
 
             return null;
+        }
+
+        private static bool PromotesToInt(this Type type)
+        {
+            var underlying = Nullable.GetUnderlyingType(type) ?? type;
+
+            return underlying == typeof(sbyte) || underlying == typeof(byte) || underlying == typeof(short) || underlying == typeof(ushort) || underlying == typeof(char);
         }
 
         public static Type Widest(this Type type, Type other, Type third)

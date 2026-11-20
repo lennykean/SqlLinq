@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace SqlLinq.UnitTests
@@ -11,13 +10,12 @@ namespace SqlLinq.UnitTests
         private const string AllPostings = "Ed Mercer/Orville; Kelly Grayson/Orville; Bortus/Orville; Gordon Malloy/Orville; Talla Keyali/Roosevelt";
 
         [TestMethod]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id", AllPostings)]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON that.Id = this.ShipId", AllPostings)]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON that.Id = this.ShipId", AllPostings)]
         [DataRow("SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id", AllPostings)]
-        [DataRow("SELECT Name, Class FROM this INNER JOIN that ON this.ShipId = that.Id WHERE Species = 'Xelayan'", "Talla Keyali/Exploratory")]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE that.Name = 'Orville' AND this.Rank >= 4", "Ed Mercer/Orville; Kelly Grayson/Orville")]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE Name LIKE '%a%'", "Kelly Grayson/Orville; Gordon Malloy/Orville; Talla Keyali/Roosevelt")]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id ORDER BY that.Name DESC, Name", "Talla Keyali/Roosevelt; Bortus/Orville; Ed Mercer/Orville; Gordon Malloy/Orville; Kelly Grayson/Orville")]
+        [DataRow("SELECT this.Name, Class FROM this INNER JOIN that ON this.ShipId = that.Id WHERE Species = 'Xelayan'", "Talla Keyali/Exploratory")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE that.Name = 'Orville' AND this.Rank >= 4", "Ed Mercer/Orville; Kelly Grayson/Orville")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE this.Name LIKE '%a%'", "Kelly Grayson/Orville; Gordon Malloy/Orville; Talla Keyali/Roosevelt")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id ORDER BY that.Name DESC, this.Name", "Talla Keyali/Roosevelt; Bortus/Orville; Ed Mercer/Orville; Gordon Malloy/Orville; Kelly Grayson/Orville")]
         public void JoinsSelectTheExpectedPostings(string sql, string expected)
         {
             // Act
@@ -49,7 +47,7 @@ namespace SqlLinq.UnitTests
             ships.Add(new Ship { Id = 1, Name = "Orville Shuttle", Class = "Shuttle" });
 
             // Act
-            var result = Orville.Crew().Query<CrewMember, Ship, Tuple<string, string>>("SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE Name = 'Bortus'", ships);
+            var result = Orville.Crew().Query<CrewMember, Ship, Tuple<string, string>>("SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE this.Name = 'Bortus'", ships);
 
             // Assert
             Assert.AreEqual("Bortus/Orville; Bortus/Orville Shuttle", Orville.Rows(result));

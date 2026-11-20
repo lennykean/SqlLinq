@@ -71,6 +71,12 @@ namespace SqlLinq.SyntaxTree
                     terminal.Place(node.Start, node.Length);
                 }
 
+                var text = (node as ExpressionNode)?.Source ?? node.ToSql();
+                foreach (var expression in placed.FindDescendants<ExpressionNode>().Append(placed as ExpressionNode).Where(e => e != null))
+                {
+                    expression.Source = text;
+                }
+
                 return placed;
             });
             if (copy is ExpressionNode rewritten && this is ExpressionNode written)
@@ -89,7 +95,7 @@ namespace SqlLinq.SyntaxTree
             }
 
             var copy = Copy();
-            copy.Bind(functions.ToDictionary(f => f.Name, StringComparer.OrdinalIgnoreCase));
+            copy.Bind(SqlParser.ByName(functions));
 
             return copy;
         }
@@ -196,6 +202,10 @@ namespace SqlLinq.SyntaxTree
             }
 
             CopyTo(copy, replacement);
+            if (copy is ExpressionNode expression)
+            {
+                expression.Source = ((ExpressionNode)this).Source;
+            }
 
             return copy;
         }
@@ -238,6 +248,13 @@ namespace SqlLinq.SyntaxTree
             return list;
         }
 
+        internal IEnumerable<SelectNode> Subqueries()
+        {
+            var arguments = FindDescendants<NonTerminalNode>().Prepend(this).SelectMany(n => (n as NodeWithId)?.Arguments ?? (n as ColumnSource)?.Arguments ?? Enumerable.Empty<ArgumentNode>());
+
+            return FindDescendants<SelectNode>().Concat(arguments.Where(a => a.Expression != null).SelectMany(a => a.Expression.Subqueries()));
+        }
+
         internal T FindChild<T>(RuleConstants child) where T : NonTerminalNode
         {
             return m_children.OfType<T>().SingleOrDefault(node => node.Rule.Index == (int)child);
@@ -250,7 +267,7 @@ namespace SqlLinq.SyntaxTree
 
         internal protected T FindChild<T>(int index) where T : SyntaxNode
         {
-            if (index > m_children.Count)
+            if (index >= m_children.Count)
                 return null;
 
             return m_children[index] as T;

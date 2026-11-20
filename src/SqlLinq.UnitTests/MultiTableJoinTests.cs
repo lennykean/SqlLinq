@@ -40,6 +40,7 @@ namespace SqlLinq.UnitTests
         [DataRow("SELECT DISTINCT s.Class, k.Role FROM crew c JOIN ships s ON c.ShipId = s.Id JOIN classes k ON s.Class = k.Class", "Exploratory/Exploration")]
         [DataRow("SELECT DISTINCT c.Species, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = s.Id ORDER BY s.Name DESC, c.Species", "Xelayan/Roosevelt; Human/Orville; Moclan/Orville")]
         [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = s.Id WHERE c.Rank * 10 = c.Age", "Kelly Grayson/Orville; Talla Keyali/Roosevelt")]
+        [DataRow("SELECT c.Name, p.Name AS Planet FROM ships s JOIN crew c ON s.Id = c.ShipId JOIN planets p ON Rank = p.Moons", "Bortus/Kaylon 1; Gordon Malloy/Xelaya; Talla Keyali/Kaylon 1")]
         public void JoinsSelectTheExpectedPairs(string sql, string expected)
         {
             // Act
@@ -149,13 +150,13 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this LEFT JOIN that ON this.ShipId = that.Id", AllPostings + "; Isaac/")]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this RIGHT JOIN that ON that.Id = this.ShipId", AllPostings + "; /Pembroke")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this LEFT JOIN that ON this.ShipId = that.Id", AllPostings + "; Isaac/")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this RIGHT JOIN that ON that.Id = this.ShipId", AllPostings + "; /Pembroke")]
         [DataRow("SELECT this.Name, that.Name AS Ship FROM this JOIN that ON this.ShipId = that.Id WHERE that.Id = 2", "Talla Keyali/Roosevelt")]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE this.Pay > 4", "Ed Mercer/Orville; Kelly Grayson/Orville")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE this.Pay > 4", "Ed Mercer/Orville; Kelly Grayson/Orville")]
         [DataRow("SELECT c.Name, s.Name AS Ship FROM this c JOIN that s ON c.ShipId = s.Id WHERE s.Name = 'Roosevelt'", "Talla Keyali/Roosevelt")]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE that.Name IN ('Roosevelt', 'Pembroke') OR this.Name LIKE 'B%'", "Bortus/Orville; Talla Keyali/Roosevelt")]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this LEFT JOIN that ON this.ShipId = that.Id WHERE that.Id IS NULL", "Isaac/")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE that.Name IN ('Roosevelt', 'Pembroke') OR this.Name LIKE 'B%'", "Bortus/Orville; Talla Keyali/Roosevelt")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this LEFT JOIN that ON this.ShipId = that.Id WHERE that.Id IS NULL", "Isaac/")]
         public void ThisAndThatJoinEveryRowShape(string sql, string expected)
         {
             // Act

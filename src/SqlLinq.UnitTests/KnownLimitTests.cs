@@ -64,7 +64,7 @@ namespace SqlLinq.UnitTests
             var e = Assert.ThrowsExactly<SqlException>(() => Orville.Tables().Query(sql).ToList());
 
             // Assert
-            Assert.Contains("The subquery returned more than one row.", e.Message);
+            Assert.Contains("The subquery can't be used as a value because it returned more than one row.", e.Message);
         }
 
         [TestMethod]

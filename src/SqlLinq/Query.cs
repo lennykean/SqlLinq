@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace SqlLinq
@@ -25,7 +26,10 @@ namespace SqlLinq
         public IEnumerable<TResult> Evaluate(IEnumerable<TSource> source)
         {
             Debug.Assert(source != null);
-            Debug.Assert(_plan != null);
+            if (_plan == null)
+            {
+                throw new InvalidOperationException("A query can't be evaluated until it has been compiled.");
+            }
 
             return _plan.Run(source);
         }

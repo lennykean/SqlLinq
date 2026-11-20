@@ -53,7 +53,7 @@ namespace SqlLinq.UnitTests
 
             // Act & Assert
             var e = Assert.ThrowsExactly<SqlException>(() => sum(Row("1", 2)));
-            Assert.AreEqual("Arithmetic requires numeric operands; received String.", e.Message);
+            Assert.AreEqual("Arithmetic can't use String values because they aren't numbers.", e.Message);
             Assert.ThrowsExactly<SqlException>(() => sum(Row(true, 2)));
             Assert.ThrowsExactly<SqlException>(() => sum(Row('1', 2)));
             Assert.ThrowsExactly<SqlException>(() => sum(Row(DayOfWeek.Monday, 2)));
@@ -77,6 +77,19 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
+        public void NegateTypedTimeSpan()
+        {
+            // Arrange
+            var negate = SqlExpression.Compile<DateTimeOffset>("-Offset");
+
+            // Act
+            var result = negate(new DateTimeOffset(2379, 9, 10, 0, 0, 0, TimeSpan.FromHours(3)));
+
+            // Assert
+            Assert.AreEqual(TimeSpan.FromHours(-3), result);
+        }
+
+        [TestMethod]
         public void ParseErrorEndsWithExpression()
         {
             // Act & Assert
@@ -89,10 +102,32 @@ namespace SqlLinq.UnitTests
         public void CompileErrorEndsWithExpression()
         {
             // Act & Assert
-            var e = Assert.ThrowsExactly<SqlException>(() => SqlExpression.Compile<Person>("Height * 2"));
+            var twice = new TestFunction("twice", arguments => System.Linq.Expressions.Expression.Convert(arguments[0].Expression, typeof(int)));
+            var e = Assert.ThrowsExactly<SqlException>(() => SqlExpression.Compile<Person>("twice(Name) * 2", [twice]));
             Assert.IsTrue(e.Message.StartsWith("SQL compile error:", StringComparison.Ordinal));
-            Assert.IsTrue(e.Message.EndsWith("\nin expression\n\tHeight * 2", StringComparison.Ordinal));
+            Assert.IsTrue(e.Message.EndsWith("\nin expression\n\ttwice(Name) * 2", StringComparison.Ordinal));
             Assert.IsNotNull(e.InnerException);
+        }
+
+        [TestMethod]
+        [DataRow("abs(malloy > 1", "The query can't be read because a function call has no closing parenthesis.")]
+        [DataRow("abs('malloy)", "The query can't be read because a string has no closing quote.")]
+        public void UnclosedTextSaysWhatIsUnclosed(string expression, string message)
+        {
+            // Act & Assert
+            var e = Assert.ThrowsExactly<SqlException>(() => SqlExpression.Compile<IDictionary<string, object>>(expression));
+            Assert.AreEqual(message, e.Message);
+        }
+
+        [TestMethod]
+        public void UnknownFieldsAreErrorsAtTheirName()
+        {
+            // Act & Assert
+            var e = Assert.ThrowsExactly<SqlException>(() => SqlExpression.Compile<Person>("Weight + Height * 2"));
+            Assert.AreEqual("Height can't be read because it isn't a field of Person.", e.Message);
+            Assert.AreEqual(SqlErrorKind.UnknownName, e.Kind);
+            Assert.AreEqual("Weight + ".Length, e.Start);
+            Assert.AreEqual("Height".Length, e.Length);
         }
     }
 }

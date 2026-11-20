@@ -22,19 +22,27 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             MethodInfo matchMethod = typeof(LikeNode).GetMethod("IsRegexMatch", new Type[] { typeof(object), typeof(Regex) });
 
             var literals = Children.OfType<TerminalNode>().Where(t => t.Symbol.Name == "StringLiteral").ToList();
-            string like = literals[0].Text.Trim('\'');
-            var regex = new Regex(literals.Count == 1 ? ConvertLikeToRegex(like) : ConvertLikeToRegex(like, Escape(literals[1].Text)), RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            string like = SqlSyntax.Unquote(literals[0].Text);
+            Regex regex;
+            try
+            {
+                regex = new Regex(literals.Count == 1 ? ConvertLikeToRegex(like) : ConvertLikeToRegex(like, Escape(literals[1])), RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            }
+            catch (SqlException e) when (e.Start < 0)
+            {
+                throw new SqlException(e.Message, e.InnerException, e.Kind, literals[0].Start, literals[0].Length);
+            }
 
             Expression match = Expression.Constant(regex);
             var input = CreateChildExpression(sourceData, param, 0);
             if (input.Type == typeof(string))
             {
-                return Expression.AndAlso(
-                    Expression.NotEqual(input, Expression.Constant(null, typeof(string))),
-                    Expression.Call(match, typeof(Regex).GetMethod(nameof(Regex.IsMatch), new[] { typeof(string) }), input));
+                return PredicateExpressionNode.Known(Expression.Call(match, typeof(Regex).GetMethod(nameof(Regex.IsMatch), new[] { typeof(string) }), input), input);
             }
 
-            return Expression.Call(matchMethod, input, match);
+            var value = input.Type == typeof(object) ? input : Expression.Convert(input, typeof(object));
+
+            return PredicateExpressionNode.Known(Expression.Call(matchMethod, value, match), value);
         }
 
         public static bool IsRegexMatch(object input, Regex regex)
@@ -73,7 +81,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 
                 if (i == pattern.Length - 1)
                 {
-                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The LIKE pattern '{0}' ends with its escape character '{1}'.", pattern, escape), SqlErrorKind.Semantic);
+                    throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The LIKE pattern '{0}' can't end with its escape character '{1}'.", pattern, escape), SqlErrorKind.Semantic);
                 }
 
                 builder.Append(ConvertWildcards(run.ToString())).Append(Regex.Escape(pattern[++i].ToString()));
@@ -92,6 +100,10 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
                 if (regex[i] == '\\' && i + 1 < regex.Length)
                 {
                     segment.Append(regex, i++, 2);
+                }
+                else if (regex[i] == '[' && regex[ClassEnd(regex, i)] != ']' || regex[i] == '^' && i > 0)
+                {
+                    segment.Append('\\').Append(regex[i]);
                 }
                 else if (regex[i] == '[')
                 {
@@ -114,7 +126,7 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             segments.Add(segment.ToString());
             if (segments.Count < 3)
             {
-                return regex;
+                return string.Join(".*", segments);
             }
 
             var atomic = new StringBuilder(segments[0]);
@@ -147,12 +159,12 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             return Math.Min(i, regex.Length - 1);
         }
 
-        private static char Escape(string literal)
+        private static char Escape(TerminalNode literal)
         {
-            var escape = SqlSyntax.Unquote(literal);
+            var escape = SqlSyntax.Unquote(literal.Text);
             if (escape.Length != 1)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The LIKE escape '{0}' must be exactly one character.", escape), SqlErrorKind.Semantic);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "The LIKE escape '{0}' can't be used because it isn't exactly one character.", escape), SqlErrorKind.Semantic, literal.Start, literal.Length);
             }
 
             return escape[0];
@@ -163,19 +175,32 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             StringBuilder builder = new StringBuilder();
             builder.Append(Regex.Escape(pattern)); // Turn "off" all regular expression related syntax in the pattern string
 
-            /* Replace the SQL LIKE wildcard metacharacters with the
-            * equivalent regular expression metacharacters. */
-            builder.Replace("%", ".*").Replace("_", ".");
-
             /* The previous call to Regex.Escape actually turned off
             * too many metacharacters, i.e. those which are recognized by
             * both the regular expression engine and the SQL LIKE
             * statement ([...] and [^...]). Those metacharacters have
             * to be manually unescaped here. */
-            builder.Replace(@"\[", "[").Replace(@"\]", "]").Replace(@"\^", "^");
+            builder.Replace(@"\[", "[").Replace(@"\]", "]").Replace(@"[\^", "[^");
 
-            // put like syntax wildcard literals back
-            builder.Replace("[.*]", "[%]").Replace("[.]", "[_]");
+            var escaped = builder.ToString();
+            builder.Clear();
+            for (var i = 0; i < escaped.Length; i++)
+            {
+                if (escaped[i] == '\\' && i + 1 < escaped.Length)
+                {
+                    builder.Append(escaped, i++, 2);
+                }
+                else if (escaped[i] == '[' && escaped[ClassEnd(escaped, i)] == ']')
+                {
+                    var end = ClassEnd(escaped, i);
+                    builder.Append(escaped, i, end - i + 1);
+                    i = end;
+                }
+                else
+                {
+                    builder.Append(escaped[i] == '%' ? ".*" : escaped[i] == '_' ? "." : escaped[i].ToString());
+                }
+            }
 
             return builder.ToString();
         }

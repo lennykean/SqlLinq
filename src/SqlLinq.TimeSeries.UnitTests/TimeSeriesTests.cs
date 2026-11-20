@@ -160,14 +160,14 @@ namespace SqlLinq.TimeSeries.UnitTests
             var ticks = new TimeSeriesQuery<int>(nrql, value => TimeSpan.FromTicks(value));
 
             // Act
-            var absoluteRows = absolute.Evaluate([noon.AddTicks(-1), noon]);
-            var negativeRows = ticks.Evaluate([-1, 0]);
+            var absoluteRows = absolute.Evaluate([noon.AddTicks(-1), noon, noon.AddSeconds(1)]);
+            var negativeRows = ticks.Evaluate([-1, 0, (int)TimeSpan.TicksPerSecond - 1]);
 
             // Assert
-            CollectionAssert.AreEqual(new object[] { 1, 1 }, Column(absoluteRows, "N"));
-            CollectionAssert.AreEqual(new object[] { noonTime - TimeSpan.FromSeconds(1), noonTime }, Column(absoluteRows, "BeginTime"));
-            CollectionAssert.AreEqual(new object[] { 1, 1 }, Column(negativeRows, "N"));
-            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(-1), TimeSpan.Zero }, Column(negativeRows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { 2, 1 }, Column(absoluteRows, "N"));
+            CollectionAssert.AreEqual(new object[] { noonTime - TimeSpan.FromTicks(1), noonTime + TimeSpan.FromSeconds(1) - TimeSpan.FromTicks(1) }, Column(absoluteRows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { 2, 1 }, Column(negativeRows, "N"));
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromTicks(-1), TimeSpan.FromSeconds(1) - TimeSpan.FromTicks(1) }, Column(negativeRows, "BeginTime"));
         }
 
         [TestMethod]
@@ -195,6 +195,58 @@ namespace SqlLinq.TimeSeries.UnitTests
 
             // Assert
             Assert.AreEqual(8, rows.Sum(r => (int)r["N"]));
+        }
+
+        [TestMethod]
+        public void BucketsStartAtTheWindow()
+        {
+            // Arrange
+            var query = new TimeSeriesQuery<int>("SELECT count(*) AS N, rate(count(*), 1 second) AS R FROM shipslog TIMESERIES 3 seconds", value => TimeSpan.FromSeconds(value));
+            var since = new TimeSeriesQuery<int>("SELECT count(*) AS N FROM shipslog SINCE 101 TIMESERIES 4 seconds", value => TimeSpan.FromSeconds(value));
+            var source = Enumerable.Range(100, 10);
+
+            // Act
+            var rows = query.Evaluate(source);
+            var sinceRows = since.Evaluate(source);
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(100), TimeSpan.FromSeconds(103), TimeSpan.FromSeconds(106), TimeSpan.FromSeconds(109) }, Column(rows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { 3, 3, 3, 1 }, Column(rows, "N"));
+            CollectionAssert.AreEqual(new object[] { 1.0, 1.0, 1.0, 1.0 / 3 }, Column(rows, "R"));
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(101), TimeSpan.FromSeconds(105), TimeSpan.FromSeconds(109) }, Column(sinceRows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { 4, 4, 1 }, Column(sinceRows, "N"));
+        }
+
+        [TestMethod]
+        [DataRow("SINCE 5 seconds ago COMPARE WITH 5 seconds ago TIMESERIES 2 seconds", "104/2, 106/2, 108/1 | 99/2, 101/2, 103/1")]
+        [DataRow("SINCE 4 seconds ago COMPARE WITH 4 seconds ago TIMESERIES 1 second", "105/1, 106/1, 107/1, 108/1 | 101/1, 102/1, 103/1, 104/1")]
+        public void CompareWithBucketsLineUpRowForRow(string clauses, string expected)
+        {
+            // Arrange
+            var query = new TimeSeriesQuery<int>("SELECT count(*) AS N FROM shipslog " + clauses, value => TimeSpan.FromSeconds(value));
+
+            // Act
+            var rows = query.Evaluate(Enumerable.Range(100, 10));
+
+            // Assert
+            Assert.AreEqual(expected, string.Join(" | ", rows.GroupBy(r => r["Comparison"]).Select(g => string.Join(", ", g.Select(r => (int)((TimeSpan)r["BeginTime"]).TotalSeconds + "/" + r["N"])))));
+        }
+
+        [TestMethod]
+        [DataRow("SELECT count(*) FROM shipslog SINCE 0 UNTIL 100000 seconds TIMESERIES 1 ms")]
+        [DataRow("SELECT count(*) FROM shipslog SINCE 900000000000 seconds ago TIMESERIES 1 ms")]
+        public void TooManyBucketsIsASqlException(string nrql)
+        {
+            // Arrange
+            var query = new TimeSeriesQuery<Sample>(nrql, s => TimeSpan.FromSeconds(s.Time));
+
+            // Act
+            var e = Assert.ThrowsExactly<SqlException>(() => query.Evaluate(GetSamples()));
+
+            // Assert
+            Assert.AreEqual("TIMESERIES 1 ms can't be used because it splits the window into more than 1000000 buckets.", e.Message);
+            Assert.AreEqual(nrql.IndexOf("1 ms", StringComparison.Ordinal), e.Start);
+            Assert.AreEqual("1 ms".Length, e.Length);
         }
 
         [TestMethod]
@@ -419,6 +471,16 @@ namespace SqlLinq.TimeSeries.UnitTests
         }
 
         [TestMethod]
+        public void WholeLiteralsBeyondInt32CompareAsLong()
+        {
+            // Act
+            var row = Run("SELECT count(*) AS N FROM shipslog WHERE DriveSpin > 99999999999").Single();
+
+            // Assert
+            Assert.AreEqual(0, row["N"]);
+        }
+
+        [TestMethod]
         public void NoMatchingFacetsGiveNoRows()
         {
             // Act
@@ -522,7 +584,7 @@ namespace SqlLinq.TimeSeries.UnitTests
             var bracketRow = query.Evaluate(source).Single();
 
             // Assert
-            Assert.AreEqual(8, stringRow["N"]);
+            Assert.AreEqual(7, stringRow["N"]);
             Assert.AreEqual(5, bracketRow["M"]);
         }
 
@@ -561,39 +623,38 @@ namespace SqlLinq.TimeSeries.UnitTests
         [DataRow("SELECT count(*) FROM shipslog TIMESERIES 0 seconds", "TIMESERIES ")]
         [DataRow("SELECT count(*) FROM shipslog TIMESERIES fast", "TIMESERIES ")]
         [DataRow("SELECT count(*) FROM shipslog TIMESERIES 1 second ago", "TIMESERIES ")]
-        [DataRow("SELECT count(*) FROM shipslog SESSION 0 seconds", "SESSION needs ")]
-        [DataRow("SELECT count(*) FROM shipslog SESSION -1 second", "SESSION -1 second isn't a duration")]
-        [DataRow("SELECT count(*) FROM shipslog SESSION 1 second ago", "SESSION needs ")]
+        [DataRow("SELECT count(*) FROM shipslog SESSION 0 seconds", "SESSION 0 seconds can't be used because it isn't a positive gap.")]
+        [DataRow("SELECT count(*) FROM shipslog SESSION -1 second", "SESSION -1 second can't be used because it isn't a duration")]
+        [DataRow("SELECT count(*) FROM shipslog SESSION 1 second ago", "SESSION 1 second ago can't be used because it isn't a positive gap.")]
         [DataRow("SELECT count(*) FROM shipslog TIMESERIES 1 second SESSION 1 second", "SESSION and TIMESERIES ")]
         [DataRow("SELECT count(*) FROM shipslog SINCE yesterday", "SINCE ")]
         [DataRow("SELECT count(*) FROM shipslog LIMIT 0", "LIMIT ")]
         [DataRow("SELECT count(*) FROM shipslog TIMESERIES 1 second LIMIT 5", "LIMIT ")]
-        [DataRow("SELECT count(*), DriveSpin FROM shipslog", "'DriveSpin' isn't an aggregate")]
-        [DataRow("SELECT count(*), DriveSpin AS DriveStage FROM shipslog FACET DriveStage", "'DriveSpin' isn't an aggregate")]
+        [DataRow("SELECT count(*), DriveSpin FROM shipslog", "'DriveSpin' can't be selected alongside aggregates because it isn't an aggregate or a FACET field.")]
+        [DataRow("SELECT count(*), DriveSpin AS DriveStage FROM shipslog FACET DriveStage", "'DriveSpin' can't be selected alongside aggregates because it isn't an aggregate or a FACET field.")]
         [DataRow("SELECT DriveSpin FROM shipslog TIMESERIES 1 second", "FACET, TIMESERIES, and SESSION ")]
         [DataRow("SELECT DriveSpin FROM shipslog FACET DriveStage", "FACET, TIMESERIES, and SESSION ")]
         [DataRow("SELECT DriveSpin FROM shipslog SESSION 1 second", "FACET, TIMESERIES, and SESSION ")]
-        [DataRow("SELECT percentile(DriveSpin) FROM shipslog", "percentile takes ")]
-        [DataRow("SELECT percentile(DriveSpin, 101) FROM shipslog", "101 isn't a percentile")]
-        [DataRow("SELECT percentile(DriveSpin, 5, 95) - min(DriveSpin) FROM shipslog", "percentile takes ")]
-        [DataRow("SELECT rate(DriveSpin, 1 second) FROM shipslog", "rate takes ")]
-        [DataRow("SELECT rate(count(*), 0 seconds) FROM shipslog", "rate needs ")]
-        [DataRow("SELECT derivative(DriveSpin) FROM shipslog", "derivative takes ")]
-        [DataRow("SELECT derivative(, 1 second) FROM shipslog", "derivative takes ")]
-        [DataRow("SELECT derivative(DriveSpin, 0 seconds) FROM shipslog", "derivative needs ")]
-        [DataRow("SELECT derivative(DriveSpin, 1 second ago) FROM shipslog", "derivative needs ")]
-        [DataRow("SELECT derivative(DriveSpin, -1 second) FROM shipslog", "derivative -1 second isn't a duration")]
-        [DataRow("SELECT average() FROM shipslog", "average takes ")]
+        [DataRow("SELECT percentile(DriveSpin) FROM shipslog", "percentile can't be calculated because here it takes 2 arguments, not 1.")]
+        [DataRow("SELECT percentile(DriveSpin, 101) FROM shipslog", "101 can't be used as a percentile because it isn't between 0 and 100.")]
+        [DataRow("SELECT percentile(DriveSpin, 5, 95) - min(DriveSpin) FROM shipslog", "percentile can't be calculated because here it takes 2 arguments, not 3.")]
+        [DataRow("SELECT rate(DriveSpin, 1 second) FROM shipslog", "rate can't be calculated because its first argument, DriveSpin, isn't an aggregate.")]
+        [DataRow("SELECT rate(count(*), 0 seconds) FROM shipslog", "rate can't be calculated because its second argument, 0 seconds, isn't a positive duration.")]
+        [DataRow("SELECT derivative(DriveSpin) FROM shipslog", "derivative can't be calculated because it takes 2 arguments, not 1.")]
+        [DataRow("SELECT derivative(, 1 second) FROM shipslog", "derivative can't be calculated because its first argument is empty.")]
+        [DataRow("SELECT derivative(DriveSpin, 0 seconds) FROM shipslog", "derivative can't be calculated because its second argument, 0 seconds, isn't a positive duration.")]
+        [DataRow("SELECT derivative(DriveSpin, 1 second ago) FROM shipslog", "derivative can't be calculated because its second argument, 1 second ago, isn't a positive duration.")]
+        [DataRow("SELECT derivative(DriveSpin, -1 second) FROM shipslog", "derivative -1 second can't be used because it isn't a duration")]
+        [DataRow("SELECT average() FROM shipslog", "average can't be calculated because it takes 1 argument, not 0.")]
         [DataRow("SELECT count(*) FROM shipslog COMPARE WITH 1 second ago", "COMPARE WITH ")]
         [DataRow("SELECT count(*) FROM shipslog SINCE 1 COMPARE 1 second", "COMPARE WITH ")]
-        [DataRow("SELECT count(*) FROM shipslog SINCE 1 SINCE 2", "The query has more than one SINCE clause.")]
+        [DataRow("SELECT count(*) FROM shipslog SINCE 1 SINCE 2", "The query can't be read because it has more than one SINCE clause.")]
         [DataRow("SELECT count(*) FROM shipslog GROUP BY DriveStage", "GROUP ")]
         [DataRow("SELECT count(*) FROM shipslog ORDER BY DriveSpin", "ORDER ")]
-        [DataRow("SELECT average(Warp) FROM shipslog TIMESERIES 1 second", "SQL compile error:")]
-        [DataRow("SELECT count(*) FROM shipslog WHERE Warp > 1", "SQL compile error:")]
-        [DataRow("SELECT count(*) FROM shipslog WHERE DriveSpin > 99999999999", "SQL compile error:")]
+        [DataRow("SELECT average(Warp) FROM shipslog TIMESERIES 1 second", "Warp can't be read because it isn't a field of Sample.")]
+        [DataRow("SELECT count(*) FROM shipslog WHERE Warp > 1", "Warp can't be read because it isn't a field of Sample.")]
         [DataRow("SELECT count(*) FROM shipslog WHERE DriveSpin >", "SQL parse error:")]
-        [DataRow("SELECT FROM shipslog", "A time series query starts SELECT")]
+        [DataRow("SELECT FROM shipslog", "The query can't be read because it doesn't start with SELECT")]
         public void InvalidQueriesThrowSqlException(string nrql, string message)
         {
             // Act & Assert
@@ -649,7 +710,7 @@ namespace SqlLinq.TimeSeries.UnitTests
         [DataRow("SELECT count(*), DriveSpin FROM shipslog", "DriveSpin")]
         [DataRow("SELECT percentile(DriveSpin, 101) FROM shipslog", "percentile(DriveSpin, 101)")]
         [DataRow("SELECT max(Warp) FROM shipslog", "Warp")]
-        [DataRow("SELECT count(*) FROM shipslog WHERE Warp > 1", "Warp > 1")]
+        [DataRow("SELECT count(*) FROM shipslog WHERE Warp > 1", "Warp")]
         public void ExpressionErrorsCarryTheirPosition(string nrql, string text)
         {
             // Act
@@ -855,6 +916,16 @@ namespace SqlLinq.TimeSeries.UnitTests
         }
 
         [TestMethod]
+        public void NamesLeaveOutAFunctionCallThatDidNotParse()
+        {
+            // Act
+            var names = TimeSeriesSyntaxTree.Parse("SELECT max(DriveSpin) FROM shipslog WHERE abs(PlasmaPressure) >").Names;
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { "DriveSpin" }, names.Select(n => n.LookupId).ToArray());
+        }
+
+        [TestMethod]
         public void TokensKnowTheDialectsKeywords()
         {
             // Arrange
@@ -1002,6 +1073,44 @@ namespace SqlLinq.TimeSeries.UnitTests
 
             // Assert
             Assert.AreEqual(3950.0, median);
+        }
+
+        [TestMethod]
+        [DataRow("5")]
+        [DataRow("3, 1")]
+        [DataRow("3, 1, 2")]
+        [DataRow("0.1, 0.7, 0.2, 0.4")]
+        [DataRow("9, NaN, 1, 4, 7")]
+        public void StatisticsKeepLinearInterpolationAndTheSampleDeviation(string list)
+        {
+            // Arrange
+            var values = list.Split(", ").Select(v => double.Parse(v, CultureInfo.InvariantCulture)).ToList();
+            var sorted = values.OrderBy(v => v).ToList();
+            var mean = values.Average();
+            var deviation = values.Count < 2 ? (double?)null : Math.Sqrt(values.Sum(v => (v - mean) * (v - mean)) / (values.Count - 1));
+            var rows = values.Select(v => (object)v).Append(null).Select(v => (IDictionary<string, object>)new Dictionary<string, object> { ["V"] = v }).ToList();
+            var query = new TimeSeriesQuery<IDictionary<string, object>>("SELECT median(V) AS M, percentile(V, 0, 30, 90, 100) AS P, stddev(V) AS S FROM shipslog", r => TimeSpan.Zero);
+
+            // Act
+            var row = query.Evaluate(rows).Single();
+
+            // Assert
+            Assert.AreEqual(Interpolated(sorted, 50), row["M"]);
+            Assert.AreEqual(Interpolated(sorted, 0), row["P.0"]);
+            Assert.AreEqual(Interpolated(sorted, 30), (double)row["P.30"], 1e-12);
+            Assert.AreEqual(Interpolated(sorted, 90), (double)row["P.90"], 1e-12);
+            Assert.AreEqual(Interpolated(sorted, 100), row["P.100"]);
+            Assert.AreEqual(deviation.HasValue, row["S"] != null);
+            Assert.AreEqual(deviation ?? 0, (double?)row["S"] ?? 0, 1e-12);
+        }
+
+        private static double Interpolated(List<double> sorted, double p)
+        {
+            var rank = p / 100 * (sorted.Count - 1);
+            var lower = (int)Math.Floor(rank);
+            var upper = (int)Math.Ceiling(rank);
+
+            return sorted[lower] + (sorted[upper] - sorted[lower]) * (rank - lower);
         }
 
         [TestMethod]
@@ -1161,11 +1270,10 @@ namespace SqlLinq.TimeSeries.UnitTests
         }
 
         [TestMethod]
-        public void DerivativeOfTextThrowsSqlException()
+        public void DerivativeOfTextThatIsNotANumberThrowsFormatException()
         {
             // Act & Assert
-            var e = Assert.ThrowsExactly<SqlException>(() => Run("SELECT derivative(Note, 1 second) FROM shipslog"));
-            Assert.AreEqual("Arithmetic requires numeric operands; received String.", e.Message);
+            Assert.ThrowsExactly<FormatException>(() => Run("SELECT derivative(Note, 1 second) FROM shipslog"));
         }
 
         [TestMethod]
@@ -1576,7 +1684,7 @@ namespace SqlLinq.TimeSeries.UnitTests
         {
             // Arrange
             using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
-            var query = new TimeSeriesQuery<int>("SELECT count(*) AS Samples FROM shipslog TIMESERIES 1 second", days => TimeSpan.FromDays(days));
+            var query = new TimeSeriesQuery<int>("SELECT count(*) AS Samples FROM shipslog TIMESERIES 3 seconds", days => TimeSpan.FromDays(days));
             var source = new[] { 0, 30 };
 
             // Act
@@ -1646,6 +1754,203 @@ namespace SqlLinq.TimeSeries.UnitTests
             // Assert
             Assert.IsEmpty(boxing.Members);
             Assert.AreEqual("Rpm", string.Join(", ", boxed.Members));
+        }
+
+        [TestMethod]
+        public void TypedAggregatesReadMembersUnboxed()
+        {
+            // Arrange
+            var query = TimeSeriesSyntaxTree.Parse("SELECT max(Rpm), min(Map), sum(Gear), average(Map), stddev(Rpm), median(Map), percentile(Rpm, 90), uniqueCount(Gear), count(Map) FROM log").Compile<Frame>();
+            var boxing = new Boxing();
+
+            // Act
+            boxing.Visit(query.Expression);
+
+            // Assert
+            Assert.IsEmpty(boxing.Members);
+        }
+
+        [TestMethod]
+        [DataRow("SINCE 1 second ago", 2)]
+        [DataRow("SINCE 0 seconds ago", 0)]
+        [DataRow("SINCE 2.5", 3)]
+        [DataRow("UNTIL 1 second ago", 6)]
+        [DataRow("UNTIL 0 seconds ago", 8)]
+        [DataRow("UNTIL 2.5", 5)]
+        [DataRow("SINCE 1 second ago UNTIL 0.5 seconds ago", 1)]
+        public void AWindowHoldsTheItemAtItsSinceButNotTheItemAtItsUntil(string window, int count)
+        {
+            // Act
+            var row = Run("SELECT count(*) AS N FROM shipslog " + window).Single();
+
+            // Assert
+            Assert.AreEqual(count, row["N"]);
+        }
+
+        [TestMethod]
+        public void BucketsOfAnAgoWindowCountEachItemTheyCover()
+        {
+            // Act
+            var rows = Run("SELECT count(*) AS N FROM shipslog SINCE 1 second ago TIMESERIES 500 ms");
+
+            // Assert
+            CollectionAssert.AreEqual(new object[] { TimeSpan.FromSeconds(2.5), TimeSpan.FromSeconds(3) }, Column(rows, "BeginTime"));
+            CollectionAssert.AreEqual(new object[] { 1, 1 }, Column(rows, "N"));
+        }
+
+        [TestMethod]
+        public void RateOverNoTimeIsNullAndOtherwiseOverTheSpanOfTheData()
+        {
+            // Arrange
+            const string Nrql = "SELECT rate(count(*), 1 second) AS R FROM shipslog";
+            var query = new TimeSeriesQuery<Sample>(Nrql, s => TimeSpan.FromSeconds(s.Time));
+            var oneTime = new TimeSeriesQuery<Sample>(Nrql, s => TimeSpan.FromSeconds(2));
+
+            // Act
+            var single = query.Evaluate(GetSamples().Take(1)).Single()["R"];
+            var shared = oneTime.Evaluate(GetSamples()).Single()["R"];
+            var newest = Run(Nrql + " SINCE 3.5").Single()["R"];
+            var all = query.Evaluate(GetSamples()).Single()["R"];
+
+            // Assert
+            Assert.IsNull(single);
+            Assert.IsNull(shared);
+            Assert.IsNull(newest);
+            Assert.AreEqual(8 / 3.5, all);
+        }
+
+        [TestMethod]
+        public void ANumberIsTrueWhenItIsNotZero()
+        {
+            // Act
+            var row = Run("SELECT count(*) AS N FROM shipslog WHERE DriveStage").Single();
+            var moving = Run("SELECT count(*) AS N FROM shipslog FACET cases(DriveStage AS 'moving') AS F").Single(r => (string)r["F"] == "moving");
+            var core = GetSamples().Query("SELECT * FROM this WHERE DriveStage").Count();
+
+            // Assert
+            Assert.AreEqual(6, row["N"]);
+            Assert.AreEqual(6, moving["N"]);
+            Assert.AreEqual(core, row["N"]);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT count(*) + DriveSpin FROM shipslog", "DriveSpin")]
+        [DataRow("SELECT max(DriveSpin) / DriveStage FROM shipslog FACET DriveStage", "DriveStage")]
+        public void PlainColumnsInAnAggregateExpressionAreSqlExceptions(string nrql, string name)
+        {
+            // Act
+            var e = Assert.ThrowsExactly<SqlException>(() => new TimeSeriesQuery<Sample>(nrql, s => TimeSpan.FromSeconds(s.Time)));
+
+            // Assert
+            Assert.AreEqual("Arithmetic with aggregates can't use '" + name + "' because it isn't an aggregate.", e.Message);
+            Assert.AreEqual(SqlErrorKind.Semantic, e.Kind);
+            Assert.AreEqual(nrql.IndexOf(name + " FROM", StringComparison.Ordinal), e.Start);
+            Assert.AreEqual(name.Length, e.Length);
+            Assert.AreEqual(e.Message, TimeSeriesSyntaxTree.Parse(nrql).Error.Message);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT sum(Note) AS V FROM shipslog", 20.0)]
+        [DataRow("SELECT median(Note) AS V FROM shipslog", 10.0)]
+        [DataRow("SELECT stddev(Note) AS V FROM shipslog", 3.5355339059327378)]
+        [DataRow("SELECT percentile(Note, 25) AS V FROM shipslog", 8.75)]
+        [DataRow("SELECT derivative(Note, 1 second) AS V FROM shipslog", -5.0)]
+        [DataRow("SELECT max(DriveSpin) - average(Note) AS V FROM shipslog", 90.0)]
+        public void NumericAggregatesOfTextConvertNumbersAndThrowOnOtherText(string nrql, double expected)
+        {
+            // Arrange
+            var query = new TimeSeriesQuery<Sample>(nrql, s => TimeSpan.FromSeconds(s.Time));
+            var numbers = new[] { new Sample { Time = 0, DriveSpin = 100, Note = "12.5" }, new Sample { Time = 1, DriveSpin = 100, Note = "7.5" } };
+
+            // Act
+            var row = query.Evaluate(numbers).Single();
+
+            // Assert
+            Assert.AreEqual(expected, (double)row["V"], 1e-12);
+            Assert.ThrowsExactly<FormatException>(() => query.Evaluate(GetSamples()));
+        }
+
+        [TestMethod]
+        public void NumericAggregatesTakeFlagsButNotTimes()
+        {
+            // Act
+            var span = Assert.ThrowsExactly<SqlException>(() => new TimeSeriesQuery<Frame>("SELECT average(Offset) FROM log", f => f.Offset));
+            var date = Assert.ThrowsExactly<SqlException>(() => new TimeSeriesQuery<DateTime>("SELECT percentile(Date, 50) FROM log", d => TimeSpan.FromTicks(d.Ticks)));
+            var flags = Run("SELECT sum(Quantum) AS Q FROM shipslog").Single();
+
+            // Assert
+            Assert.AreEqual("Arithmetic can't use TimeSpan values because they aren't numbers.", span.Message);
+            Assert.AreEqual("Arithmetic can't use DateTime values because they aren't numbers.", date.Message);
+            Assert.AreEqual(3.0, flags["Q"]);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT max(Session) AS M FROM log", "M=5")]
+        [DataRow("SELECT max(Since) - min(Compare) AS M FROM log", "M=3")]
+        public void ColumnsNamedLikeClausesWorkWhereNoClauseCanStart(string nrql, string expected)
+        {
+            // Arrange
+            var source = new[]
+            {
+                new Dictionary<string, object> { ["Session"] = 1, ["Since"] = 3, ["Compare"] = 4 },
+                new Dictionary<string, object> { ["Session"] = 5, ["Since"] = 7, ["Compare"] = 8 },
+            };
+            var query = new TimeSeriesQuery<Dictionary<string, object>>(nrql, d => TimeSpan.FromSeconds((int)d["Session"]));
+
+            // Act
+            var rows = query.Evaluate(source);
+
+            // Assert
+            Assert.AreEqual(expected, string.Join("; ", rows.Select(r => string.Join(", ", r.Select(c => c.Key + "=" + Convert.ToString(c.Value, CultureInfo.InvariantCulture))))));
+        }
+
+        [TestMethod]
+        [DataRow("SELECT count(*)FROM shipslog", "count(*)", 8)]
+        [DataRow("SELECT max(DriveSpin)FROM shipslog", "max(DriveSpin)", 7900)]
+        public void FromCanFollowAParenthesis(string nrql, string column, int value)
+        {
+            // Act
+            var row = Run(nrql).Single();
+
+            // Assert
+            Assert.AreEqual(value, row[column]);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT max(log.x) AS M FROM log", 52)]
+        [DataRow("SELECT max([log.x]) AS M FROM log", 52)]
+        [DataRow("SELECT max(engine.rpm) AS M FROM engine", 2000)]
+        public void DottedKeysOfDictionaryRowsAreReadWhole(string nrql, int expected)
+        {
+            // Arrange
+            var rows = new[]
+            {
+                new Dictionary<string, object> { ["x"] = 1, ["log.x"] = 50, ["engine.rpm"] = 2000 },
+                new Dictionary<string, object> { ["x"] = 1, ["log.x"] = 52, ["engine.rpm"] = 1000 },
+            };
+            var query = new TimeSeriesQuery<Dictionary<string, object>>(nrql, r => TimeSpan.Zero);
+
+            // Act
+            var row = query.Evaluate(rows).Single();
+
+            // Assert
+            Assert.AreEqual(expected, row["M"]);
+        }
+
+        [TestMethod]
+        [DataRow("SELECT count(*) FROM shipslog FACET other.DriveStage", "other.DriveStage")]
+        [DataRow("SELECT count(*) FROM shipslog WHERE other.DriveStage > 1", "other.DriveStage")]
+        [DataRow("SELECT other.Id FROM shipslog", "other.Id")]
+        [DataRow("SELECT percentile(other.Id, 5, 95) FROM shipslog", "other.Id")]
+        public void UnknownQualifiersAreErrorsAtTheirText(string nrql, string text)
+        {
+            // Act
+            var e = Assert.ThrowsExactly<SqlException>(() => new TimeSeriesQuery<Sample>(nrql, s => TimeSpan.FromSeconds(s.Time)));
+
+            // Assert
+            Assert.AreEqual(SqlErrorKind.UnknownName, e.Kind);
+            Assert.AreEqual(nrql.IndexOf(text, StringComparison.Ordinal), e.Start);
+            Assert.AreEqual(text.Length, e.Length);
         }
 
         private static List<Frame> Frames()

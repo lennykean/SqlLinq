@@ -48,7 +48,8 @@ namespace SqlLinq.SyntaxTree.Joins
             var rowType = Composite(RowType, itemType);
             var row = Expression.Parameter(RowType, "row");
             var item = Expression.Parameter(itemType, "item");
-            var (outerKey, innerKey) = Keys(Read(Item(row, outer, count - 1), outer, outerField), Read(item, count - 1, innerField));
+            var outerValue = outer < 0 ? Unqualified(row, SqlSyntax.Name(join.Children.OfType<TerminalNode>().First(t => t.Symbol.Name == "Id" && SqlSyntax.Unbracket(t.Text) == outerField)), count - 1) : Read(Item(row, outer, count - 1), outer, outerField);
+            var (outerKey, innerKey) = Keys(outerValue, Read(item, count - 1, innerField));
             var outerSelector = Expression.Lambda(outerKey, row);
             var innerSelector = Expression.Lambda(innerKey, item);
 
@@ -126,8 +127,23 @@ namespace SqlLinq.SyntaxTree.Joins
         internal Expression Read(Expression row, Identifier id)
         {
             var index = id.Qualifier.Length == 0 ? -1 : _sources.FindIndex(s => s.Names.Contains(id.Qualifier));
+            try
+            {
+                return index < 0 ? Unqualified(row, id, _sources.Count) : Read(Item(row, index, _sources.Count), index, id.LocalId);
+            }
+            catch (SqlException e) when (e.Start < 0)
+            {
+                throw new SqlException(e.Message, e.InnerException, e.Kind, id.Start, id.Length);
+            }
+        }
 
-            return index < 0 ? Unqualified(row, id) : Read(Item(row, index, _sources.Count), index, id.LocalId);
+        internal string Field(Identifier id)
+        {
+            var index = id.Qualifier.Length == 0
+                ? _sources.TakeWhile(s => !Untyped(s.Type)).ToList().FindIndex(s => s.Type.HasPropertyOrField(id.LookupId))
+                : _sources.FindIndex(s => s.Names.Contains(id.Qualifier));
+
+            return index < 0 ? id.LookupId : index + "." + id.LocalId;
         }
 
         internal Expression Star(Expression row)
@@ -190,7 +206,7 @@ namespace SqlLinq.SyntaxTree.Joins
 
             if (!source.Type.HasPropertyOrField(field))
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a field of {1}.", field, source.Type.Name), SqlErrorKind.UnknownName);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} can't be read because it isn't a field of {1}.", field, source.Type.Name), SqlErrorKind.UnknownName);
             }
 
             var value = ExpressionFactory.CreateFieldSelector(item, field);
@@ -207,10 +223,14 @@ namespace SqlLinq.SyntaxTree.Joins
                 value.Type == type ? value : Expression.Convert(value, type));
         }
 
-        private Expression Unqualified(Expression row, Identifier id)
+        private Expression Unqualified(Expression row, Identifier id, int count)
         {
             var dotted = id.Qualifier.Length > 0;
-            var count = _sources.Count;
+            if (!dotted && _sources.Count(s => !Untyped(s.Type) && s.Type.HasPropertyOrField(id.LookupId)) > 1)
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} can't be resolved because more than one joined table has it.", id.LookupId), SqlErrorKind.Semantic, id.Start, id.Length);
+            }
+
             Expression result = null;
             for (var i = count - 1; i >= 0; i--)
             {
@@ -238,14 +258,14 @@ namespace SqlLinq.SyntaxTree.Joins
             }
 
             throw new SqlException(dotted
-                ? string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query.", id.Qualifier, id.LookupId)
-                : string.Format(CultureInfo.CurrentCulture, "{0} isn't a field of any source of this query.", id.LookupId), SqlErrorKind.UnknownName);
+                ? string.Format(CultureInfo.CurrentCulture, "{1} can't be read because {0} isn't a source or alias of this query.", id.Qualifier, id.LookupId)
+                : string.Format(CultureInfo.CurrentCulture, "{0} can't be read because it isn't a field of any source of this query.", id.LookupId), SqlErrorKind.UnknownName, id.Start, id.Length);
         }
 
         private static UnaryExpression Missing(Identifier id)
         {
             var error = id.Qualifier.Length > 0
-                ? Expression.New(typeof(SqlException).GetConstructor(new[] { typeof(string), typeof(SqlErrorKind) }), Expression.Constant(string.Format(CultureInfo.CurrentCulture, "{0} in {1} isn't a source or alias of this query, or a field of the row.", id.Qualifier, id.LookupId)), Expression.Constant(SqlErrorKind.UnknownName))
+                ? Expression.New(typeof(SqlException).GetConstructor(new[] { typeof(string), typeof(SqlErrorKind) }), Expression.Constant(string.Format(CultureInfo.CurrentCulture, "{1} can't be read because {0} isn't a source or alias of this query, or a field of the row.", id.Qualifier, id.LookupId)), Expression.Constant(SqlErrorKind.UnknownName))
                 : Expression.New(typeof(KeyNotFoundException).GetConstructor(new[] { typeof(string) }), Expression.Constant(string.Format(CultureInfo.CurrentCulture, "The given key '{0}' was not present in the dictionary.", id.LookupId)));
 
             return Expression.Throw(error, typeof(object));
@@ -342,7 +362,7 @@ namespace SqlLinq.SyntaxTree.Joins
                 return field.GetValue(item);
             }
 
-            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} isn't a field of {1}.", name, item.GetType().Name), SqlErrorKind.UnknownName);
+            throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} can't be read because it isn't a field of {1}.", name, item.GetType().Name), SqlErrorKind.UnknownName);
         }
 
         private static Dictionary<string, object> Flatten(object[] items, JoinLayout layout)

@@ -14,7 +14,7 @@ namespace SqlLinq.SyntaxTree
         {
             get
             {
-                return Own<AggregateNode>().Any();
+                return Own<AggregateNode>().Any() || Own<NodeWithId>().Any(n => n.Aggregates.Any());
             }
         }
 

@@ -81,7 +81,7 @@ namespace SqlLinq.SyntaxTree.Clauses
             var index = columns.IndexOf(item.SelectColumn());
             if (index < 0)
             {
-                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} isn't a column of the select list.", item.Id.LookupId), SqlErrorKind.UnknownName);
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "ORDER BY {0} can't be used because it isn't a column of the select list.", item.Id.LookupId), SqlErrorKind.UnknownName, item.Start, item.Length);
             }
 
             return row => ResultOrder.Column(row, names[index], index, single);

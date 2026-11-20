@@ -144,11 +144,11 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name, Species FROM crew ORDER BY 0", "ORDER BY 0 is out of range; the select list has 2 columns.")]
-        [DataRow("SELECT Name, Species FROM crew ORDER BY 1, 3", "ORDER BY 3 is out of range; the select list has 2 columns.")]
-        [DataRow("SELECT DISTINCT Name, Species FROM crew ORDER BY 3", "ORDER BY 3 is out of range; the select list has 2 columns.")]
-        [DataRow("SELECT * FROM crew ORDER BY 7", "ORDER BY 7 is out of range; the select list has 6 columns.")]
-        [DataRow("SELECT * FROM crew c JOIN ships s ON c.ShipId = s.Id ORDER BY 1", "ORDER BY 1 needs a select list; SELECT * over dictionary or dynamic rows has no fixed column order.")]
+        [DataRow("SELECT Name, Species FROM crew ORDER BY 0", "ORDER BY 0 can't be used because it isn't a column position from 1 to 2.")]
+        [DataRow("SELECT Name, Species FROM crew ORDER BY 1, 3", "ORDER BY 3 can't be used because it isn't a column position from 1 to 2.")]
+        [DataRow("SELECT DISTINCT Name, Species FROM crew ORDER BY 3", "ORDER BY 3 can't be used because it isn't a column position from 1 to 2.")]
+        [DataRow("SELECT * FROM crew ORDER BY 7", "ORDER BY 7 can't be used because it isn't a column position from 1 to 6.")]
+        [DataRow("SELECT * FROM crew c JOIN ships s ON c.ShipId = s.Id ORDER BY 1", "ORDER BY 1 can't be resolved because SELECT * over dictionary or dynamic rows has no fixed column order.")]
         public void OrderByPositionOutsideTheSelectListThrows(string sql, string message)
         {
             // Act & Assert
@@ -161,7 +161,7 @@ namespace SqlLinq.UnitTests
         {
             // Act & Assert
             var e = Assert.ThrowsExactly<SqlException>(() => Orville.DictionaryTables().Query("SELECT * FROM crew ORDER BY 1").ToList());
-            Assert.AreEqual("ORDER BY 1 needs a select list; SELECT * over dictionary or dynamic rows has no fixed column order.", e.Message);
+            Assert.AreEqual("ORDER BY 1 can't be resolved because SELECT * over dictionary or dynamic rows has no fixed column order.", e.Message);
         }
 
         [TestMethod]
@@ -194,10 +194,10 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name FROM ships WHERE Name LIKE 'Orville%' ESCAPE '!!'", "The LIKE escape '!!' must be exactly one character.")]
-        [DataRow("SELECT Name FROM ships WHERE Name NOT LIKE 'Orville%' ESCAPE ''", "The LIKE escape '' must be exactly one character.")]
-        [DataRow("SELECT Name FROM ships WHERE Name LIKE 'Orville!' ESCAPE '!'", "The LIKE pattern 'Orville!' ends with its escape character '!'.")]
-        [DataRow("SELECT Name FROM ships WHERE Name NOT LIKE '%!' ESCAPE '!'", "The LIKE pattern '%!' ends with its escape character '!'.")]
+        [DataRow("SELECT Name FROM ships WHERE Name LIKE 'Orville%' ESCAPE '!!'", "The LIKE escape '!!' can't be used because it isn't exactly one character.")]
+        [DataRow("SELECT Name FROM ships WHERE Name NOT LIKE 'Orville%' ESCAPE ''", "The LIKE escape '' can't be used because it isn't exactly one character.")]
+        [DataRow("SELECT Name FROM ships WHERE Name LIKE 'Orville!' ESCAPE '!'", "The LIKE pattern 'Orville!' can't end with its escape character '!'.")]
+        [DataRow("SELECT Name FROM ships WHERE Name NOT LIKE '%!' ESCAPE '!'", "The LIKE pattern '%!' can't end with its escape character '!'.")]
         public void LikeEscapeThatIsNotOneCharacterThrows(string sql, string message)
         {
             // Act & Assert
@@ -283,8 +283,8 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Species, SUM(DISTINCT Rank) FROM crew", "Your query contains fields and aggregates but no GROUP BY clause.")]
-        [DataRow("SELECT Name FROM crew WHERE AVG(DISTINCT Rank) > 3", "Aggregate expressions are not valid in a WHERE clause.")]
+        [DataRow("SELECT Species, SUM(DISTINCT Rank) FROM crew", "Fields and aggregates can't be selected together without GROUP BY.")]
+        [DataRow("SELECT Name FROM crew WHERE AVG(DISTINCT Rank) > 3", "WHERE can't use an aggregate because it filters rows before grouping.")]
         [DataRow("SELECT SUM(DISTINCT) FROM crew", "SQL parse error")]
         [DataRow("SELECT MAX(DISTINCT *) FROM crew", "SQL parse error")]
         public void DistinctAggregateMistakesThrow(string sql, string message)
@@ -482,10 +482,12 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name, MAX(Pay) - 1 AS Top FROM crew", "Your query contains fields and aggregates but no GROUP BY clause.")]
-        [DataRow("SELECT MAX(Pay) - Pay AS Gap FROM crew", "Your query contains fields and aggregates but no GROUP BY clause.")]
-        [DataRow("SELECT Species, MAX(Age) - Rank AS Gap FROM crew GROUP BY Species", "The query contains the field 'Rank' that is not matched between the select list and group by clause.")]
+        [DataRow("SELECT Name, MAX(Pay) - 1 AS Top FROM crew", "Fields and aggregates can't be selected together without GROUP BY.")]
+        [DataRow("SELECT MAX(Pay) - Pay AS Gap FROM crew", "Fields and aggregates can't be selected together without GROUP BY.")]
+        [DataRow("SELECT Species, MAX(Age) - Rank AS Gap FROM crew GROUP BY Species", "The field 'Rank' can't be selected because it isn't in the GROUP BY clause.")]
         [DataRow("SELECT Name, Pay * 2 FROM crew", "SQL parse error")]
+        [DataRow("SELECT Name, abs(MAX(Pay)) AS Top FROM crew", "Fields and aggregates can't be selected together without GROUP BY.")]
+        [DataRow("SELECT Species, abs(MAX(Age) - Rank) AS Gap FROM crew GROUP BY Species", "The field 'Rank' can't be selected because it isn't in the GROUP BY clause.")]
         public void ComputedColumnMistakesThrow(string sql, string message)
         {
             // Act & Assert
@@ -530,7 +532,7 @@ namespace SqlLinq.UnitTests
         {
             // Act & Assert
             var e = Assert.ThrowsExactly<SqlException>(() => Orville.Tables().Query("SELECT Species, twice(Rank) FROM crew GROUP BY Species", Twice).ToList());
-            Assert.Contains("The query contains the field 'Rank' that is not matched between the select list and group by clause.", e.Message);
+            Assert.Contains("The field 'Rank' can't be selected because it isn't in the GROUP BY clause.", e.Message);
         }
 
         [TestMethod]
@@ -541,7 +543,7 @@ namespace SqlLinq.UnitTests
         {
             // Act & Assert
             var e = Assert.ThrowsExactly<SqlException>(() => Orville.Tables().Query(sql, Twice).ToList());
-            Assert.Contains("The query contains the field '" + field + "' that is not matched between the select list and group by clause.", e.Message);
+            Assert.Contains("The field '" + field + "' can't be selected because it isn't in the GROUP BY clause.", e.Message);
         }
 
         [TestMethod]
@@ -565,7 +567,7 @@ namespace SqlLinq.UnitTests
         public void NamedResultsNeedDistinctColumnNames(string sql, string name)
         {
             // Arrange
-            var message = "The select list has more than one column named '" + name + "'; give each a different name with AS.";
+            var message = "The result can't be built because the select list has more than one column named '" + name + "'.";
 
             // Act & Assert
             var dictionaries = Assert.ThrowsExactly<SqlException>(() => Orville.Tables().Query(sql, Twice).ToList());
@@ -616,7 +618,7 @@ namespace SqlLinq.UnitTests
         {
             // Act & Assert
             var e = Assert.ThrowsExactly<SqlException>(() => Orville.Tables().Query<string>("SELECT Name, Species FROM crew").ToList());
-            Assert.AreEqual("String has no constructor that takes the 2 columns of the select list.", e.Message);
+            Assert.AreEqual("The result can't be built because String has no constructor that takes the 2 columns of the select list.", e.Message);
         }
 
         [TestMethod]
@@ -660,12 +662,12 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT c.Name FROM crew c WHERE crew.Rank > 3", "crew in crew.Rank isn't a source or alias of this query")]
-        [DataRow("SELECT crew.Name FROM crew c", "crew in crew.Name isn't a source or alias of this query")]
-        [DataRow("SELECT c.Name FROM crew c ORDER BY crew.Name", "crew in crew.Name isn't a source or alias of this query")]
-        [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = s.Id WHERE ships.Id = 2", "ships in ships.Id isn't a source or alias of this query")]
-        [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c, ships s WHERE c.ShipId = ships.Id", "ships in ships.Id isn't a source or alias of this query")]
-        [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = ships.Id", "JOIN ON c.ShipId = ships.Id must compare a field of the joined source with a field of an earlier source.")]
+        [DataRow("SELECT c.Name FROM crew c WHERE crew.Rank > 3", "crew.Rank can't be read because crew isn't a source or alias of this query")]
+        [DataRow("SELECT crew.Name FROM crew c", "crew.Name can't be read because crew isn't a source or alias of this query")]
+        [DataRow("SELECT c.Name FROM crew c ORDER BY crew.Name", "crew.Name can't be read because crew isn't a source or alias of this query")]
+        [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = s.Id WHERE ships.Id = 2", "ships.Id can't be read because ships isn't a source or alias of this query")]
+        [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c, ships s WHERE c.ShipId = ships.Id", "ships.Id can't be read because ships isn't a source or alias of this query")]
+        [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = ships.Id", "JOIN ON c.ShipId = ships.Id can't run because it doesn't compare a field of the joined source with a field of an earlier source.")]
         public void AnAliasHidesItsTableName(string sql, string message)
         {
             // Act
@@ -719,7 +721,7 @@ namespace SqlLinq.UnitTests
 
             // Assert
             Assert.AreEqual("Roosevelt", string.Join(", ", dynamics));
-            Assert.AreEqual("engine in engine.rpm isn't a source or alias of this query, or a field of the row.", dictionaries.Message);
+            Assert.AreEqual("engine.rpm can't be read because engine isn't a source or alias of this query, or a field of the row.", dictionaries.Message);
         }
 
         [TestMethod]
@@ -777,7 +779,7 @@ namespace SqlLinq.UnitTests
         public void MissingDottedKeysThrowSqlExceptionWhenARowIsRead()
         {
             // Arrange
-            var message = "Engine in Engine.Torque isn't a source or alias of this query, or a field of the row.";
+            var message = "Engine.Torque can't be read because Engine isn't a source or alias of this query, or a field of the row.";
             var expression = SqlExpression.Compile<IDictionary<string, object>>("Engine.Torque > 1");
 
             // Act
@@ -798,7 +800,7 @@ namespace SqlLinq.UnitTests
             var e = Assert.ThrowsExactly<SqlException>(() => Orville.Crew().Query("SELECT * FROM this WHERE Engine.RPM > 3000"));
 
             // Assert
-            Assert.AreEqual("Engine in Engine.RPM isn't a source or alias of this query.", e.Message);
+            Assert.AreEqual("Engine.RPM can't be read because Engine isn't a source or alias of this query.", e.Message);
         }
 
         [TestMethod]
@@ -848,7 +850,7 @@ namespace SqlLinq.UnitTests
         [DataRow("SELECT * FROM this WHERE Rank IN (3, 5)", "Ed Mercer, Bortus, Talla Keyali")]
         [DataRow("SELECT * FROM this WHERE Rank BETWEEN 3 AND 4", "Kelly Grayson, Bortus, Talla Keyali")]
         [DataRow("SELECT * FROM this WHERE Name > 'K'", "Kelly Grayson, Talla Keyali")]
-        [DataRow("SELECT * FROM this WHERE NOT Rank > 2", "<null>, Gordon Malloy, Isaac")]
+        [DataRow("SELECT * FROM this WHERE NOT Rank > 2", "Gordon Malloy, Isaac")]
         [DataRow("SELECT * FROM this", "Ed Mercer, Kelly Grayson, <null>, Bortus, Gordon Malloy, Talla Keyali, Isaac")]
         public void NullRowsOfATypedListMatchNoComparison(string sql, string expected)
         {
@@ -895,8 +897,8 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id")]
-        [DataRow("SELECT Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE this.Rank > 2")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id")]
+        [DataRow("SELECT this.Name, that.Name AS Ship FROM this INNER JOIN that ON this.ShipId = that.Id WHERE this.Rank > 2")]
         public void NullRowsOfATypedListFailJoins(string sql)
         {
             // Arrange
@@ -963,7 +965,7 @@ namespace SqlLinq.UnitTests
 
         [TestMethod]
         [DataRow("SELECT Species, COUNT(*) FROM crew GROUP BY Species HAVING COUNT(*) = 1 AND Species IN (SELECT Species FROM planets WHERE Moons > 1) ORDER BY Species", "Kaylon, 1; Xelayan, 1")]
-        [DataRow("SELECT s.Name, s.Id IN (SELECT ShipId FROM crew) AS Crewed FROM ships s", "Orville, True; Roosevelt, True; Pembroke, False")]
+        [DataRow("SELECT s.Name, s.Id IN (SELECT ShipId FROM crew) AS Crewed FROM ships s", "Orville, True; Roosevelt, True; Pembroke, ")]
         [DataRow("SELECT COUNT(*) AS N FROM crew WHERE ShipId IN (SELECT Id FROM ships WHERE Class = 'Exploratory')", "5")]
         public void InSubqueryWorksInEveryClause(string sql, string expected)
         {
@@ -1038,11 +1040,11 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name FROM crew WHERE ShipId IN (SELECT Id, Name FROM ships)", "The subquery of IN must select exactly one column.")]
-        [DataRow("SELECT Name FROM crew WHERE ShipId IN (SELECT * FROM ships)", "The subquery of IN must select exactly one column.")]
-        [DataRow("SELECT Name FROM crew WHERE ShipId NOT IN (SELECT * FROM ships)", "The subquery of IN must select exactly one column.")]
-        [DataRow("SELECT Name FROM crew WHERE ShipId IN (SELECT Id FROM nowhere)", "'nowhere' isn't one of the sources")]
-        [DataRow("SELECT Name FROM crew WHERE ShipId IN (SELECT Id FROM ships WHERE Id = (SELECT Id FROM ships))", "The subquery returned more than one row.")]
+        [DataRow("SELECT Name FROM crew WHERE ShipId IN (SELECT Id, Name FROM ships)", "The subquery of IN can't be used because it doesn't select exactly one column.")]
+        [DataRow("SELECT Name FROM crew WHERE ShipId IN (SELECT * FROM ships)", "The subquery of IN can't be used because it doesn't select exactly one column.")]
+        [DataRow("SELECT Name FROM crew WHERE ShipId NOT IN (SELECT * FROM ships)", "The subquery of IN can't be used because it doesn't select exactly one column.")]
+        [DataRow("SELECT Name FROM crew WHERE ShipId IN (SELECT Id FROM nowhere)", "'nowhere' can't be read because it isn't one of the sources")]
+        [DataRow("SELECT Name FROM crew WHERE ShipId IN (SELECT Id FROM ships WHERE Id = (SELECT Id FROM ships))", "The subquery can't be used as a value because it returned more than one row.")]
         public void InSubqueryMistakesThrow(string sql, string message)
         {
             // Act & Assert
@@ -1131,9 +1133,9 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name FROM crew WHERE EXISTS (SELECT * FROM nowhere)", "'nowhere' isn't one of the sources")]
-        [DataRow("SELECT Name FROM crew WHERE EXISTS (SELECT Id FROM ships WHERE Id = (SELECT Id FROM ships))", "The subquery returned more than one row.")]
-        [DataRow("SELECT Name FROM crew WHERE NOT EXISTS (SELECT Species, COUNT(*) FROM crew)", "Your query contains fields and aggregates but no GROUP BY clause.")]
+        [DataRow("SELECT Name FROM crew WHERE EXISTS (SELECT * FROM nowhere)", "'nowhere' can't be read because it isn't one of the sources")]
+        [DataRow("SELECT Name FROM crew WHERE EXISTS (SELECT Id FROM ships WHERE Id = (SELECT Id FROM ships))", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT Name FROM crew WHERE NOT EXISTS (SELECT Species, COUNT(*) FROM crew)", "Fields and aggregates can't be selected together without GROUP BY.")]
         [DataRow("SELECT Name FROM crew WHERE EXISTS SELECT * FROM ships", "SQL parse error")]
         public void ExistsMistakesThrow(string sql, string message)
         {
@@ -1159,7 +1161,6 @@ namespace SqlLinq.UnitTests
         [DataRow("SELECT Name, Class FROM ships WHERE Id >= ANY (SELECT ShipId FROM crew WHERE Rank = 2)", "Orville/Exploratory; Roosevelt/Exploratory; Pembroke/Science")]
         [DataRow("SELECT Name, Species FROM crew WHERE ShipId < ANY (SELECT Id FROM ships)", "Ed Mercer/Human; Kelly Grayson/Human; Bortus/Moclan; Gordon Malloy/Human; Talla Keyali/Xelayan")]
         [DataRow("SELECT Name, Species FROM crew WHERE Species > ALL (SELECT Species FROM planets WHERE Moons < 2)", "Talla Keyali/Xelayan")]
-        [DataRow("SELECT Name, Species FROM crew WHERE Name > ANY (SELECT Rank FROM crew)", "")]
         [DataRow("SELECT c.Name, c.Species FROM crew c WHERE c.Rank >= ALL (SELECT k.Rank FROM crew k WHERE k.Species = c.Species)", "Ed Mercer/Human; Bortus/Moclan; Talla Keyali/Xelayan; Isaac/Kaylon")]
         [DataRow("SELECT s.Name, s.Class FROM ships s WHERE 4 < ANY (SELECT c.Rank FROM crew c WHERE c.ShipId = s.Id)", "Orville/Exploratory")]
         [DataRow("SELECT c.Name, s.Name AS Ship FROM crew c JOIN ships s ON c.ShipId = s.Id WHERE c.Pay > ALL (SELECT p.Gravity FROM planets p)", "Ed Mercer/Orville; Kelly Grayson/Orville")]
@@ -1241,12 +1242,13 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name FROM crew WHERE Rank > ALL (SELECT Rank, Age FROM crew)", "The subquery of ALL must select exactly one column.")]
-        [DataRow("SELECT Name FROM crew WHERE Rank = ANY (SELECT * FROM crew)", "The subquery of ANY must select exactly one column.")]
-        [DataRow("SELECT Name FROM crew WHERE Rank < some (SELECT * FROM crew)", "The subquery of SOME must select exactly one column.")]
-        [DataRow("SELECT Name FROM crew WHERE Rank > ALL (SELECT Rank FROM nowhere)", "'nowhere' isn't one of the sources")]
-        [DataRow("SELECT Name FROM crew WHERE Rank > ALL (SELECT Id FROM ships WHERE Id = (SELECT Id FROM ships))", "The subquery returned more than one row.")]
+        [DataRow("SELECT Name FROM crew WHERE Rank > ALL (SELECT Rank, Age FROM crew)", "The subquery of ALL can't be used because it doesn't select exactly one column.")]
+        [DataRow("SELECT Name FROM crew WHERE Rank = ANY (SELECT * FROM crew)", "The subquery of ANY can't be used because it doesn't select exactly one column.")]
+        [DataRow("SELECT Name FROM crew WHERE Rank < some (SELECT * FROM crew)", "The subquery of SOME can't be used because it doesn't select exactly one column.")]
+        [DataRow("SELECT Name FROM crew WHERE Rank > ALL (SELECT Rank FROM nowhere)", "'nowhere' can't be read because it isn't one of the sources")]
+        [DataRow("SELECT Name FROM crew WHERE Rank > ALL (SELECT Id FROM ships WHERE Id = (SELECT Id FROM ships))", "The subquery can't be used as a value because it returned more than one row.")]
         [DataRow("SELECT Name FROM crew WHERE Rank > ALL (1, 2)", "SQL parse error")]
+        [DataRow("SELECT Name FROM crew WHERE Name > ANY (SELECT Rank FROM crew)", "Name > ANY (SELECT Rank FROM crew)")]
         public void QuantifiedComparisonMistakesThrow(string sql, string message)
         {
             // Act & Assert
@@ -1361,13 +1363,13 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT Name FROM crew UNION SELECT Name, Species FROM planets", "Each part of a UNION must select the same number of columns.")]
-        [DataRow("SELECT * FROM crew UNION SELECT Name FROM ships", "Each part of a UNION must select the same number of columns.")]
-        [DataRow("SELECT Name FROM crew ORDER BY Name UNION SELECT Name FROM ships", "Only the last part of a UNION can have an ORDER BY; it orders the whole UNION.")]
-        [DataRow("SELECT Name FROM crew UNION SELECT Name FROM ships ORDER BY 2", "ORDER BY 2 is out of range; the select list has 1 columns.")]
-        [DataRow("SELECT Name FROM crew UNION SELECT Name FROM ships ORDER BY Rank", "ORDER BY Rank isn't a column of the UNION.")]
-        [DataRow("SELECT Name FROM crew UNION SELECT Class FROM ships", "Each part of a UNION must name its columns like the first part (Name); use AS to rename them.")]
-        [DataRow("SELECT Name FROM crew UNION SELECT Name FROM nowhere", "'nowhere' isn't one of the sources")]
+        [DataRow("SELECT Name FROM crew UNION SELECT Name, Species FROM planets", "The parts of the UNION can't be combined because they select different numbers of columns.")]
+        [DataRow("SELECT * FROM crew UNION SELECT Name FROM ships", "The parts of the UNION can't be combined because they select different numbers of columns.")]
+        [DataRow("SELECT Name FROM crew ORDER BY Name UNION SELECT Name FROM ships", "ORDER BY can't be on a part of a UNION before the last because it orders the whole UNION.")]
+        [DataRow("SELECT Name FROM crew UNION SELECT Name FROM ships ORDER BY 2", "ORDER BY 2 can't be used because it isn't a column position from 1 to 1.")]
+        [DataRow("SELECT Name FROM crew UNION SELECT Name FROM ships ORDER BY Rank", "ORDER BY Rank can't be used because it isn't a column of the UNION.")]
+        [DataRow("SELECT Name FROM crew UNION SELECT Class FROM ships", "The parts of the UNION can't be combined because they don't all name their columns like the first part (Name).")]
+        [DataRow("SELECT Name FROM crew UNION SELECT Name FROM nowhere", "'nowhere' can't be read because it isn't one of the sources")]
         public void UnionMistakesThrow(string sql, string message)
         {
             // Act & Assert
@@ -1380,7 +1382,7 @@ namespace SqlLinq.UnitTests
         {
             // Act & Assert
             var e = Assert.ThrowsExactly<SqlException>(() => Orville.DictionaryTables().Query("SELECT * FROM crew UNION SELECT * FROM ships ORDER BY 1").ToList());
-            Assert.AreEqual("ORDER BY 1 needs a select list; SELECT * over dictionary or dynamic rows has no fixed column order.", e.Message);
+            Assert.AreEqual("ORDER BY 1 can't be resolved because SELECT * over dictionary or dynamic rows has no fixed column order.", e.Message);
         }
 
         [TestMethod]
@@ -1391,7 +1393,7 @@ namespace SqlLinq.UnitTests
 
             // Act & Assert
             var e = Assert.ThrowsExactly<SqlException>(() => query.Compile());
-            Assert.AreEqual("A compiled query can't run a UNION; use the Query extension methods instead.", e.Message);
+            Assert.AreEqual("A compiled query can't run a UNION because it runs a single SELECT.", e.Message);
         }
 
         [TestMethod]
@@ -1549,7 +1551,7 @@ namespace SqlLinq.UnitTests
             var e = Assert.ThrowsExactly<SqlException>(() => Orville.Tables().Query(sql).ToList());
 
             // Assert
-            Assert.AreEqual("The subquery returned more than one row.", e.Message);
+            Assert.AreEqual("The subquery can't be used as a value because it returned more than one row.", e.Message);
         }
 
         private static (string First, int FirstReads, string Second, int AllReads) RunTwiceCountingReads(string sql)

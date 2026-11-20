@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Linq;
 using System.Collections.Generic;
 using System.Diagnostics;
 
@@ -31,7 +30,7 @@ namespace SqlLinq
 
             if (syntax.Root is UnionNode)
             {
-                throw new SqlException("A compiled query can't run a UNION; use the Query extension methods instead.", SqlErrorKind.Semantic);
+                throw new SqlException("A compiled query can't run a UNION because it runs a single SELECT.", SqlErrorKind.Semantic);
             }
 
             Syntax = syntax;

@@ -32,7 +32,7 @@ namespace SqlLinq
 
         public IEnumerator GetEnumerator()
         {
-            throw new NotSupportedException("A plan reads its tables when it executes.");
+            throw new NotSupportedException("The table can't be read until the plan executes.");
         }
     }
 }

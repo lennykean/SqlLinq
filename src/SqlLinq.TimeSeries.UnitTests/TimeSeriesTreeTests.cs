@@ -5,6 +5,8 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Threading;
+using LinqStatistics;
+using MathNet.Numerics.Statistics;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace SqlLinq.TimeSeries.UnitTests
@@ -12,7 +14,7 @@ namespace SqlLinq.TimeSeries.UnitTests
     [TestClass]
     public class TimeSeriesTreeTests
     {
-        private static readonly string[] Operations = ["Values.Read", "Enumerable.Where", "Enumerable.GroupBy", "Enumerable.OrderByDescending", "Values.Buckets", "Enumerable.ToLookup", "Enumerable.Zip"];
+        private static readonly string[] Operations = ["Values.Read", "Enumerable.Where", "Enumerable.GroupBy", "Enumerable.OrderByDescending", "Enumerable.Range", "Enumerable.ToLookup", "Enumerable.Zip"];
 
         private static List<Sample> GetSamples()
         {
@@ -109,62 +111,67 @@ namespace SqlLinq.TimeSeries.UnitTests
         }
 
         [TestMethod]
-        [DataRow(2L, 4L, "2, 3, 4")]
-        [DataRow(-2L, 0L, "-2, -1, 0")]
-        [DataRow(5L, 5L, "5")]
-        [DataRow(5L, 4L, "")]
-        public void BucketsAreEveryIndexFromFirstToLast(long first, long last, string expected)
+        [DataRow("SINCE 2 UNTIL 5", "2, 3, 4")]
+        [DataRow("SINCE 0.5 UNTIL 3", "0.5, 1.5, 2.5")]
+        [DataRow("SINCE 5 UNTIL 6", "5")]
+        [DataRow("SINCE 5 UNTIL 5", "")]
+        [DataRow("SINCE 5 UNTIL 4", "")]
+        public void BucketsAreEveryIndexFromFirstToLast(string window, string expected)
         {
             // Arrange
-            var buckets = Operation("SELECT count(*) FROM shipslog TIMESERIES 1 second", "Buckets");
+            var nrql = "SELECT count(*) FROM shipslog " + window + " TIMESERIES 1 second";
+            var range = Operation(nrql, "Range");
 
             // Act
-            var indexes = (IEnumerable<long>)buckets.Invoke(null, [first, last]);
+            var rows = TimeSeriesSyntaxTree.Parse(nrql).Compile<Sample>().Execute(GetSamples(), Time);
 
             // Assert
-            Assert.AreEqual(expected, string.Join(", ", indexes));
+            Assert.AreEqual(typeof(Enumerable), range.DeclaringType);
+            Assert.AreEqual(expected, string.Join(", ", rows.Select(r => ((TimeSpan)r["BeginTime"]).TotalSeconds.ToString(CultureInfo.InvariantCulture))));
         }
 
         [TestMethod]
         public void DerivativeIsTheSlopeOfTheFittedLine()
         {
             // Arrange
-            var derivative = Operation("SELECT derivative(DriveSpin, 1 second) FROM shipslog", "Derivative");
-            var line = new List<(TimeSpan Time, object Value)> { (TimeSpan.Zero, 1), (TimeSpan.FromSeconds(1), 3.0), (TimeSpan.FromSeconds(2), 5m) };
-            var single = new List<(TimeSpan Time, object Value)> { (TimeSpan.Zero, 1) };
-            var sameTime = new List<(TimeSpan Time, object Value)> { (TimeSpan.Zero, 1), (TimeSpan.Zero, 2) };
-            var text = new List<(TimeSpan Time, object Value)> { (TimeSpan.Zero, 1), (TimeSpan.FromSeconds(1), "two") };
+            var fit = Operation("SELECT derivative(DriveSpin, 1 second) FROM shipslog", "LeastSquares");
+            var plan = TimeSeriesSyntaxTree.Parse("SELECT derivative(V, 1 minute) AS D FROM log").Compile<IDictionary<string, object>>();
+            var line = new object[] { 1, 3.0, 5m }.Select((v, i) => (IDictionary<string, object>)new Dictionary<string, object> { ["T"] = i, ["V"] = v }).ToList();
+            var sameTime = new object[] { 1, 2 }.Select(v => (IDictionary<string, object>)new Dictionary<string, object> { ["T"] = 0, ["V"] = v }).ToList();
+            Func<IDictionary<string, object>, TimeSpan> time = r => TimeSpan.FromSeconds((int)r["T"]);
 
             // Act
-            var perMinute = (double)derivative.Invoke(null, [line, 60.0]);
-            var e = Assert.ThrowsExactly<TargetInvocationException>(() => derivative.Invoke(null, [text, 1.0]));
+            var perMinute = (double)plan.Execute(line, time).Single()["D"];
+            var single = plan.Execute(line.Take(1), time).Single()["D"];
+            var together = plan.Execute(sameTime, time).Single()["D"];
 
             // Assert
+            Assert.AreEqual(typeof(EnumerableStats), fit.DeclaringType);
             Assert.AreEqual(120.0, perMinute, 1e-9);
-            Assert.IsNull(derivative.Invoke(null, [single, 1.0]));
-            Assert.IsNull(derivative.Invoke(null, [sameTime, 1.0]));
-            Assert.AreEqual("Arithmetic requires numeric operands; received String.", e.InnerException.Message);
+            Assert.IsNull(single);
+            Assert.IsNull(together);
         }
 
         [TestMethod]
         public void PercentileAndDeviationReadNumbersAsDoubles()
         {
             // Arrange
-            var percentile = Operation("SELECT percentile(DriveSpin, 50) FROM shipslog", "Percentile");
-            var deviation = Operation("SELECT stddev(DriveSpin) FROM shipslog", "SampleStandardDeviation");
-            var values = new List<object> { 4, 1.0, 3m, 2L };
+            var quantile = Operation("SELECT percentile(DriveSpin, 50) FROM shipslog", "QuantileCustom");
+            var deviation = Operation("SELECT stddev(DriveSpin) FROM shipslog", "StandardDeviation");
+            var plan = TimeSeriesSyntaxTree.Parse("SELECT median(V) AS M, percentile(V, 100) AS P, stddev(V) AS S FROM log").Compile<IDictionary<string, object>>();
+            var values = new object[] { 4, 1.0, 3m, 2L }.Select(v => (IDictionary<string, object>)new Dictionary<string, object> { ["V"] = v }).ToList();
 
             // Act
-            var median = percentile.Invoke(null, [values, 50.0]);
-            var top = percentile.Invoke(null, [values, 100.0]);
-            var spread = (double)deviation.Invoke(null, [new List<double> { 1, 2, 3, 4 }]);
+            var row = plan.Execute(values, r => TimeSpan.Zero).Single();
+            var one = plan.Execute(values.Take(1), r => TimeSpan.Zero).Single();
 
             // Assert
-            Assert.AreEqual(2.5, median);
-            Assert.AreEqual(4.0, top);
-            Assert.AreEqual(Math.Sqrt(5.0 / 3), spread, 1e-12);
-            Assert.IsNull(percentile.Invoke(null, [new List<object>(), 50.0]));
-            Assert.IsNull(deviation.Invoke(null, [new List<double> { 1 }]));
+            Assert.AreEqual(typeof(SortedArrayStatistics), quantile.DeclaringType);
+            Assert.AreEqual(typeof(EnumerableStats), deviation.DeclaringType);
+            Assert.AreEqual(2.5, row["M"]);
+            Assert.AreEqual(4.0, row["P"]);
+            Assert.AreEqual(Math.Sqrt(5.0 / 3), (double)row["S"], 1e-12);
+            Assert.IsNull(one["S"]);
         }
 
         [TestMethod]
@@ -194,7 +201,7 @@ namespace SqlLinq.TimeSeries.UnitTests
 
             // Assert
             Assert.AreEqual("< 2000|2000 - < 4000|2000 - < 4000|>= 6000||", string.Join("|", placed));
-            Assert.AreEqual("buckets requires numeric values; received String.", e.InnerException.Message);
+            Assert.AreEqual("buckets can't use String values because they aren't numbers.", e.InnerException.Message);
         }
 
         private sealed class Collector : ExpressionVisitor

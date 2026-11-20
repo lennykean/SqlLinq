@@ -120,7 +120,7 @@ namespace SqlLinq.TimeSeries.UnitTests
         [TestMethod]
         [DataRow("SELECT Id FROM shipslog LIMIT 2 -- top two", 2)]
         [DataRow("SELECT Id FROM shipslog /* FACET Quantum */ WHERE DriveStage > 1 -- SINCE 3\nLIMIT 3", 3)]
-        [DataRow("SELECT Id /* , Note */ FROM shipslog WHERE Note <> '-- not a comment' AND DriveStage < 4", 7)]
+        [DataRow("SELECT Id /* , Note */ FROM shipslog WHERE Note <> '-- not a comment' AND DriveStage < 4", 6)]
         public void CommentsAreNotClauses(string nrql, int rows)
         {
             // Act

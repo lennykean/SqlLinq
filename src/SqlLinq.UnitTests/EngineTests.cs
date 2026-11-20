@@ -218,6 +218,7 @@ namespace SqlLinq.UnitTests
         [DataRow("SELECT Species, MAX(Rank) FROM crew GROUP BY Species HAVING Species <> 'Human' AND MAX(Rank) = 3 ORDER BY Species", "Moclan/3; Xelayan/3")]
         [DataRow("SELECT c.Species, COUNT(*) FROM crew c WHERE c.Rank < 5 GROUP BY c.Species HAVING COUNT(*) > 1", "Human/2")]
         [DataRow("SELECT s.Name, COUNT(*) FROM crew c JOIN ships s ON c.ShipId = s.Id GROUP BY s.Name HAVING COUNT(*) > 1", "Orville/4")]
+        [DataRow("SELECT c.Species, COUNT(*) FROM crew c JOIN ships s ON c.ShipId = s.Id GROUP BY c.Species HAVING Species <> 'Human' AND COUNT(*) = 1 ORDER BY c.Species", "Moclan/1; Xelayan/1")]
         public void HavingFiltersGroupsOnAggregates(string sql, string expected)
         {
             // Act
@@ -282,16 +283,17 @@ namespace SqlLinq.UnitTests
         }
 
         [TestMethod]
-        [DataRow("SELECT c.Name FROM crew c WHERE x.Rank > 3", "x in x.Rank isn't a source or alias of this query")]
-        [DataRow("SELECT c.Name FROM crew c WHERE c2.Rank > (SELECT AVG(c2.Rank) FROM crew c2)", "c2 in c2.Rank isn't a source or alias of this query")]
-        [DataRow("SELECT Name FROM crew WHERE Rank > (SELECT AVG(Rank) FROM nowhere)", "'nowhere' isn't one of the sources")]
-        [DataRow("SELECT Name FROM crew WHERE ShipId = (SELECT Id FROM ships WHERE Class = 'Exploratory')", "The subquery returned more than one row.")]
-        [DataRow("SELECT s.Name FROM ships s WHERE (SELECT c.Name FROM crew c WHERE c.ShipId = s.Id) IS NULL", "The subquery returned more than one row.")]
-        [DataRow("SELECT COUNT(*) FROM crew WHERE ShipId = (SELECT Id FROM ships)", "The subquery returned more than one row.")]
-        [DataRow("SELECT Name FROM ships WHERE Id = (SELECT COUNT(*) FROM crew WHERE ShipId = (SELECT Id FROM ships))", "The subquery returned more than one row.")]
-        [DataRow("SELECT Species, COUNT(*) FROM crew WHERE COUNT(*) > 1 GROUP BY Species", "Aggregate expressions are not valid in a WHERE clause")]
+        [DataRow("SELECT c.Name FROM crew c WHERE x.Rank > 3", "x.Rank can't be read because x isn't a source or alias of this query")]
+        [DataRow("SELECT c.Name FROM crew c WHERE c2.Rank > (SELECT AVG(c2.Rank) FROM crew c2)", "c2.Rank can't be read because c2 isn't a source or alias of this query")]
+        [DataRow("SELECT Name FROM crew WHERE Rank > (SELECT AVG(Rank) FROM nowhere)", "'nowhere' can't be read because it isn't one of the sources")]
+        [DataRow("SELECT Name FROM crew WHERE ShipId = (SELECT Id FROM ships WHERE Class = 'Exploratory')", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT s.Name FROM ships s WHERE (SELECT c.Name FROM crew c WHERE c.ShipId = s.Id) IS NULL", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT COUNT(*) FROM crew WHERE ShipId = (SELECT Id FROM ships)", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT Name FROM ships WHERE Id = (SELECT COUNT(*) FROM crew WHERE ShipId = (SELECT Id FROM ships))", "The subquery can't be used as a value because it returned more than one row.")]
+        [DataRow("SELECT Species, COUNT(*) FROM crew WHERE COUNT(*) > 1 GROUP BY Species", "WHERE can't use an aggregate because it filters rows before grouping")]
         [DataRow("SELECT * FROM crew c, ships c WHERE c.ShipId = c.Id", "joined more than once")]
-        [DataRow("SELECT * FROM crew c, nowhere n", "'nowhere' isn't one of the sources")]
+        [DataRow("SELECT * FROM crew c, nowhere n", "'nowhere' can't be read because it isn't one of the sources")]
+        [DataRow("SELECT s.Class, COUNT(*) FROM classes k, ships s GROUP BY Class", "The field 's.Class' can't be selected because it isn't in the GROUP BY clause.")]
         public void EngineReportsMistakesAsSqlException(string sql, string message)
         {
             // Act & Assert

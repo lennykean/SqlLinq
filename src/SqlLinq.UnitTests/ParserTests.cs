@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using GoldParser;
@@ -88,8 +87,8 @@ namespace SqlLinq.UnitTests
             Assert.IsFalse(parsed);
             Assert.AreEqual("Comment Error. Unexpected end of input.", parser.ErrorString);
             Assert.StartsWith("SQL parse error", thrown.Message);
-            Assert.AreEqual(sql.Length, thrown.Start);
-            Assert.AreEqual(0, thrown.Length);
+            Assert.AreEqual(sql.IndexOf("/*", StringComparison.Ordinal), thrown.Start);
+            Assert.AreEqual(sql.Length - thrown.Start, thrown.Length);
         }
     }
 }

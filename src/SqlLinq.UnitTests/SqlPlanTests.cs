@@ -91,7 +91,7 @@ namespace SqlLinq.UnitTests
 
             // Act & Assert
             Assert.IsNull(syntax.Error);
-            Assert.ThrowsExactly<ArgumentException>(() => syntax.Compile<CrewMember, IDictionary<string, object>>());
+            Assert.ThrowsExactly<SqlException>(() => syntax.Compile<CrewMember, IDictionary<string, object>>());
         }
 
         [TestMethod]
@@ -105,10 +105,10 @@ namespace SqlLinq.UnitTests
             var e = Assert.ThrowsExactly<SqlException>(() => SqlExpression.Compile<CrewMember>((ExpressionNode)syntax.Root));
 
             // Assert
-            Assert.AreEqual(7, e.Start);
-            Assert.AreEqual(19, e.Length);
-            Assert.EndsWith("in expression\n\tRank > 2 AND Warp<3", e.Message);
-            Assert.IsInstanceOfType<ArgumentException>(e.InnerException);
+            Assert.AreEqual(Text.IndexOf("Warp", StringComparison.Ordinal), e.Start);
+            Assert.AreEqual("Warp".Length, e.Length);
+            Assert.AreEqual("Warp can't be read because it isn't a field of CrewMember.", e.Message);
+            Assert.IsNull(e.InnerException);
         }
 
         [TestMethod]
@@ -185,9 +185,11 @@ namespace SqlLinq.UnitTests
             // Act
             var inherited = frames.Query<IFrame, IDictionary<string, object>>("SELECT offset, Rpm FROM this WHERE Rpm > 1000").Single();
             var hidden = frames.Query<Frame, IDictionary<string, object>>("SELECT Hidden FROM this WHERE Hidden > 1000").Single();
+            var star = frames.Query<IFrame, IDictionary<string, object>>("SELECT * FROM this WHERE Rpm > 1000").Single();
 
             // Assert
             Assert.AreEqual(TimeSpan.FromSeconds(2) + "/6000", inherited["offset"] + "/" + inherited["Rpm"]);
+            Assert.AreEqual("Rpm=6000, Offset=" + TimeSpan.FromSeconds(2), string.Join(", ", star.Select(c => c.Key + "=" + c.Value)));
             Assert.AreEqual(3000.0, hidden["Hidden"]);
         }
 

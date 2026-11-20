@@ -37,50 +37,36 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
             var key = left.Type.KeyType(QueryTree.ElementOf(results.Type));
             if (key == null)
             {
-                var body = Expression.Call(
-                    typeof(InSubqueryNode),
-                    nameof(Matches),
-                    null,
-                    Expression.Convert(left, typeof(object)),
-                    TupleSelectNode.CreateUntypedValues(Subquery, results),
-                    Expression.Constant(Negated));
+                var untyped = TupleSelectNode.CreateUntypedValues(Subquery, results);
+                var boxed = Expression.Call(typeof(SourcesExtensions), nameof(SourcesExtensions.KeyOf), null, Expression.Convert(left, typeof(object)));
 
-                return TupleSelectNode.Guard(body);
+                return TupleSelectNode.Guard(QueryTree.Bind(boxed, bound => In(untyped, bound, typeof(object))));
             }
 
             var keys = QueryTree.Select(results, QueryTree.ElementOf(results.Type), key, row => ExpressionFactory.ToKey(row, key));
             var values = QueryTree.Materialize(Subquery, Expression.New(typeof(HashSet<>).MakeGenericType(key).GetConstructor(new[] { QueryTree.Sequence(key) }), keys));
             var value = ExpressionFactory.ToKey(left, key);
 
-            return QueryTree.Simple(left) ? Typed(values, value, key) : QueryTree.Bind(value, bound => Typed(values, bound, key));
+            return QueryTree.Simple(left) ? In(values, value, key) : QueryTree.Bind(value, bound => In(values, bound, key));
         }
 
-        private Expression Typed(Expression values, Expression value, Type key)
+        private Expression In(Expression values, Expression value, Type key)
         {
             return QueryTree.Bind(values, set =>
             {
-                var known = Expression.NotEqual(value, Expression.Constant(null, key));
-                var contains = Expression.Call(typeof(Enumerable), nameof(Enumerable.Contains), new[] { key }, set, value);
-                if (!Negated)
+                Expression contains = Expression.Call(typeof(Enumerable), nameof(Enumerable.Contains), new[] { key }, set, value);
+                Expression unknown = Expression.Call(typeof(Enumerable), nameof(Enumerable.Contains), new[] { key }, set, Expression.Constant(null, key));
+                if (PredicateExpressionNode.MayBeNull(value))
                 {
-                    return Expression.AndAlso(known, contains);
+                    var missing = Expression.Equal(value, Expression.Constant(null, key));
+                    contains = Expression.AndAlso(Expression.Not(missing), contains);
+                    unknown = Expression.Condition(missing, Expression.Call(typeof(Enumerable), nameof(Enumerable.Any), new[] { key }, set), unknown);
                 }
 
-                var empty = Expression.Not(Expression.Call(typeof(Enumerable), nameof(Enumerable.Any), new[] { key }, set));
-                var unknown = Expression.Call(typeof(Enumerable), nameof(Enumerable.Contains), new[] { key }, set, Expression.Constant(null, key));
+                var found = Expression.OrElse(Expression.Convert(contains, typeof(bool?)), Expression.Condition(unknown, Expression.Constant(null, typeof(bool?)), Expression.Constant(false, typeof(bool?))));
 
-                return Expression.OrElse(empty, Expression.AndAlso(known, Expression.AndAlso(Expression.Not(unknown), Expression.Not(contains))));
+                return Negated ? Expression.Not(found) : (Expression)found;
             });
-        }
-
-        private static bool Matches(object value, HashSet<object> values, bool negated)
-        {
-            if (!negated)
-            {
-                return value != null && values.Contains(SourcesExtensions.KeyOf(value));
-            }
-
-            return values.Count == 0 || value != null && !values.Contains(null) && !values.Contains(SourcesExtensions.KeyOf(value));
         }
     }
 }

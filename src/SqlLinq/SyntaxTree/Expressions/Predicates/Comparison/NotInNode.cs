@@ -1,8 +1,4 @@
-﻿using System;
-using System.Linq;
-using System.Reflection;
-
-using System.Linq.Expressions;
+﻿using System.Linq.Expressions;
 
 namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 {
@@ -15,7 +11,10 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 
         internal override Expression CreateExpression(ParameterExpression sourceData, ParameterExpression param)
         {
-            return Expression.Not(CreateInExpression(CreateChildExpression(sourceData, param, 3), CreateChildExpression(sourceData, param, 0)));
+            var list = CreateChildExpression(sourceData, param, 3);
+            var left = CreateChildExpression(sourceData, param, 0);
+
+            return Expression.Not(Compiled(() => CreateInExpression(list, left)));
         }
     }
 }

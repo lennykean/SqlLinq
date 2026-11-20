@@ -33,7 +33,7 @@ namespace SqlLinq
         {
             if (_tables.Count != 1)
             {
-                throw new InvalidOperationException(string.Format(CultureInfo.CurrentCulture, "The plan reads {0} tables; execute it with them by name.", _tables.Count));
+                throw new InvalidOperationException(string.Format(CultureInfo.CurrentCulture, "The plan can't execute on one source because it reads {0} tables.", _tables.Count));
             }
 
             return Run(source ?? Array.Empty<object>());
@@ -69,7 +69,7 @@ namespace SqlLinq
                 var match = tables.FirstOrDefault(t => string.Equals(t.Key, name, StringComparison.OrdinalIgnoreCase));
                 if (match.Key == null)
                 {
-                    throw new ArgumentException(string.Format(CultureInfo.CurrentCulture, "The plan reads a table named '{0}', which tables doesn't have.", name), nameof(tables));
+                    throw new ArgumentException(string.Format(CultureInfo.CurrentCulture, "The plan can't execute without a table named '{0}' in tables.", name), nameof(tables));
                 }
 
                 table = match.Value;

@@ -1,6 +1,4 @@
 ﻿using System;
-using System.Text;
-using System.Collections.Generic;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -68,8 +66,7 @@ namespace SqlLinq.UnitTests
             var result = source.Query<Person>("SELECT * FROM this WHERE Address = NULL");
 
             // Assert
-            Assert.IsTrue(result.Any());
-            Assert.IsTrue(result.SequenceEqual(source.Where(p => p.Address == null)));
+            Assert.IsFalse(result.Any());
         }
     }
 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 
+using SqlLinq.SyntaxTree.Aggregates;
 using SqlLinq.SyntaxTree.Expressions;
 
 namespace SqlLinq.SyntaxTree
@@ -44,6 +45,14 @@ namespace SqlLinq.SyntaxTree
             }
         }
 
+        internal IEnumerable<AggregateNode> ArgumentAggregates
+        {
+            get
+            {
+                return NodeWithId.ArgumentAggregates(Arguments ?? Enumerable.Empty<ArgumentNode>());
+            }
+        }
+
         public override string ToSql()
         {
             return Function == null ? base.ToSql() : JoinSql(Children.Select(c => c is TerminalNode ? NodeWithId.Call(FunctionName, Arguments) : c.ToSql()));
@@ -61,7 +70,7 @@ namespace SqlLinq.SyntaxTree
         {
             if (Function != null)
             {
-                return Function.Compile(Arguments.Select(a => new SqlArgument(a.Text, a.Expression.CreateExpression(rows, row))).ToList());
+                return NodeWithId.Compile(Function, FunctionName, Arguments, rows, row, GetTerminal("Id"));
             }
 
             return SelectNode.CreateFieldSelector(EnclosingSelect(), Id, row);

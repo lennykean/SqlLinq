@@ -23,6 +23,11 @@ namespace SqlLinq
 
         public TResult Evaluate(IEnumerable<TSource> source)
         {
+            if (Select == null)
+            {
+                throw new InvalidOperationException("A query can't be evaluated until it has been compiled.");
+            }
+
             return Select(source);
         }
     }

@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -9,8 +8,6 @@ namespace SqlLinq.SyntaxTree.Clauses
 {
     internal static class ResultOrder
     {
-        private static readonly IComparer<object> ValueOrder = Comparer<object>.Create((left, right) => Comparer.Default.Compare(SourcesExtensions.KeyOf(left), SourcesExtensions.KeyOf(right)));
-
         internal static Expression Order(Expression rows, Type tResult, IList<(Func<Expression, Expression> Key, bool Descending)> keys)
         {
             var ordered = rows;
@@ -23,12 +20,20 @@ namespace SqlLinq.SyntaxTree.Clauses
                     : keys[i].Descending ? nameof(Enumerable.ThenByDescending) : nameof(Enumerable.ThenBy);
                 var selector = Expression.Lambda(Expression.GetFuncType(tResult, key.Type), key, row);
 
-                ordered = key.Type == typeof(object)
-                    ? Expression.Call(typeof(Enumerable), method, new[] { tResult, key.Type }, ordered, selector, Expression.Constant(ValueOrder, typeof(IComparer<object>)))
-                    : Expression.Call(typeof(Enumerable), method, new[] { tResult, key.Type }, ordered, selector);
+                ordered = Sort(method, tResult, ordered, selector);
             }
 
             return ordered;
+        }
+
+        internal static MethodCallExpression Sort(string method, Type element, Expression rows, LambdaExpression selector)
+        {
+            if (selector.ReturnType == typeof(object))
+            {
+                selector = Expression.Lambda(Expression.Call(typeof(SourcesExtensions), nameof(SourcesExtensions.KeyOf), null, selector.Body), selector.Parameters);
+            }
+
+            return Expression.Call(typeof(Enumerable), method, new[] { element, selector.ReturnType }, rows, selector);
         }
 
         internal static Expression Column(Expression row, string name, int index, bool single)

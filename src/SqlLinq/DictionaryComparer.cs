@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Linq;
 using System.Collections.Generic;
 
 namespace SqlLinq
@@ -35,7 +34,7 @@ namespace SqlLinq
                     if (!object.ReferenceEquals(vy, null))
                         return false;
                 }
-                else if (!vx.Equals(vy))
+                else if (!object.Equals(SourcesExtensions.KeyOf(vx), SourcesExtensions.KeyOf(vy)))
                 {
                     return false;
                 }
@@ -53,8 +52,8 @@ namespace SqlLinq
 
             foreach (KeyValuePair<TKey, TValue> pair in obj)
             {
-                int key = pair.Key.GetHashCode(); // key cannot be null
-                int value = pair.Value != null ? pair.Value.GetHashCode() : 0;
+                int key = pair.Key is string text ? StringComparer.OrdinalIgnoreCase.GetHashCode(text) : pair.Key.GetHashCode(); // key cannot be null
+                int value = pair.Value != null ? SourcesExtensions.KeyOf(pair.Value).GetHashCode() : 0;
                 hash ^= ShiftAndWrap(key, 2) ^ value;
             }
 

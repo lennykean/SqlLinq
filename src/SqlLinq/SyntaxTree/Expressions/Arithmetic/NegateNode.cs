@@ -1,4 +1,5 @@
-﻿using System.Linq.Expressions;
+﻿using System;
+using System.Linq.Expressions;
 
 namespace SqlLinq.SyntaxTree.Expressions.Arithmetic
 {
@@ -10,7 +11,10 @@ namespace SqlLinq.SyntaxTree.Expressions.Arithmetic
             var value = CreateChildExpression(sourceData, param, 1);
             if (value.Type != typeof(object))
             {
-                return Expression.NegateChecked(value);
+                var underlying = Nullable.GetUnderlyingType(value.Type) ?? value.Type;
+                var type = underlying.IsPrimitive && underlying != typeof(bool) ? underlying.Widest(typeof(int)).Lifted(value.Type) : value.Type;
+
+                return Compiled(() => Expression.NegateChecked(type == value.Type ? value : Expression.Convert(value, type)));
             }
 
             return ArithmeticExpressionNode.Negate(value);

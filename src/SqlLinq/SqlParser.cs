@@ -10,15 +10,17 @@ using GoldParser;
 
 using SqlLinq.SyntaxTree;
 using SqlLinq.SyntaxTree.Aggregates;
+using SqlLinq.SyntaxTree.Clauses;
 using SqlLinq.SyntaxTree.Expressions;
+using SqlLinq.SyntaxTree.Joins;
 
 namespace SqlLinq
 {
     public class SqlParser
     {
-        private const string Placeholder = "$sqlfn";
+        internal const string Placeholder = "$sqlfn";
 
-        private const string WherePrefix = "SELECT * FROM this WHERE ";
+        private const string HavingPrefix = "SELECT * FROM this HAVING ";
 
         private readonly Dictionary<string, ISqlFunction> _functions;
 
@@ -30,6 +32,12 @@ namespace SqlLinq
 
         private int _offset;
 
+        private string _source;
+
+        private bool _expression;
+
+        private bool _aggregates;
+
         private Parser m_parser;
 
         public SqlParser() : this(null)
@@ -38,8 +46,7 @@ namespace SqlLinq
 
         internal SqlParser(IEnumerable<ISqlFunction> functions)
         {
-            _functions = (functions ?? Enumerable.Empty<ISqlFunction>())
-                .ToDictionary(f => f.Name, StringComparer.OrdinalIgnoreCase);
+            _functions = ByName(functions ?? Enumerable.Empty<ISqlFunction>());
 
             foreach (var function in MathFunction.All)
             {
@@ -74,7 +81,15 @@ namespace SqlLinq
         {
             get
             {
-                return m_parser != null ? m_parser.LineText : "";
+                if (_source == null || ErrorStart < 0)
+                {
+                    return m_parser != null ? m_parser.LineText : "";
+                }
+
+                var end = Math.Min(ErrorStart - _offset + ErrorLength, _source.Length);
+                var start = _source.LastIndexOf('\n', Math.Max(end - 1, 0)) + 1;
+
+                return _source[start..end];
             }
         }
 
@@ -117,14 +132,15 @@ namespace SqlLinq
                 bool parsed;
                 try
                 {
-                    parsed = Parse(reader);
+                    parsed = Parse(reader, source);
                 }
-                catch (SqlException e) when (e.Start < 0 && _reductions.Count > 0)
+                catch (SqlException e) when (_reductions.Count > 0)
                 {
                     Place(calls);
                     var failed = _reductions[_reductions.Count - 1];
+                    var (start, length) = e.Start < 0 ? (failed.Start, failed.Length) : ToSource(calls, e.Start, e.Length);
 
-                    throw new SqlException(e.Message, e.InnerException, e.Kind, failed.Start, failed.Length);
+                    throw new SqlException(e.Message, e.InnerException, e.Kind, start, length);
                 }
 
                 Place(calls);
@@ -154,25 +170,65 @@ namespace SqlLinq
                 column.Arguments = Arguments(call, column);
             }
 
+            foreach (var select in SyntaxTree.FindDescendants<SelectNode>().Prepend(SyntaxTree).OfType<SelectNode>())
+            {
+                try
+                {
+                    select.CheckSyntax();
+                }
+                catch (SqlException e) when (e.Start < 0)
+                {
+                    throw new SqlException(e.Message, e.InnerException, e.Kind, select.Start, select.Length);
+                }
+            }
+
+            var ordered = SyntaxTree.FindDescendants<OrderByItem>().FirstOrDefault(o => o.Id.LookupId.StartsWith(Placeholder, StringComparison.Ordinal));
+            var joined = SyntaxTree.FindDescendants<Join>().SelectMany(j => j.Children.OfType<TerminalNode>()).Select(t => SqlSyntax.Name(t)).FirstOrDefault(i => i.LookupId.StartsWith(Placeholder, StringComparison.Ordinal));
+            var misplaced = joined ?? ordered?.Id;
+            if (misplaced != null)
+            {
+                var error = new SqlException(string.Format(CultureInfo.CurrentCulture, joined != null ? "JOIN ON can't call {0} because it compares column names, not function calls." : "ORDER BY can't call {0} because it orders by column names, not function calls.", source.Substring(misplaced.Start - _offset, misplaced.Length)), SqlErrorKind.Semantic, misplaced.Start, misplaced.Length);
+                if (!_lenient)
+                {
+                    throw error;
+                }
+
+                ArgumentError ??= error;
+            }
+
             return true;
         }
 
         internal bool ParseExpression(string expression)
         {
-            _offset -= WherePrefix.Length;
+            _expression = true;
+            _offset -= HavingPrefix.Length;
             try
             {
-                if (!Parse(WherePrefix + expression))
+                if (!Parse(HavingPrefix + expression))
                 {
                     return false;
                 }
             }
             finally
             {
-                _offset += WherePrefix.Length;
+                _offset += HavingPrefix.Length;
             }
 
-            Expression = ((SelectNode)SyntaxTree).WhereClause.FindChild<ExpressionNode>();
+            var having = ((SelectNode)SyntaxTree).HavingClause;
+            var aggregate = having.FindDescendants<AggregateNode>().FirstOrDefault(a => !a.AncestorsBelow(having).OfType<SelectNode>().Any());
+            if (aggregate != null && !_aggregates)
+            {
+                throw new SqlException(string.Format(CultureInfo.CurrentCulture, "{0} can't be used here because it's an aggregate.", aggregate.ToSql()), SqlErrorKind.Semantic, aggregate.Start, aggregate.Length);
+            }
+
+            Expression = having.FindChild<ExpressionNode>();
+            if (Expression == null)
+            {
+                Expression = (ExpressionNode)SyntaxRuleFactory.CreateNode(new Rule((int)RuleConstants.RULE_VALUE2, new Symbol((int)SymbolConstants.SYMBOL_VALUE, "Value", SymbolType.NonTerminal), new[] { aggregate.Rule.NonTerminal }));
+                Expression.AppendChildNode(aggregate);
+            }
+
             Expression.Parent = null;
             Expression.Source = expression;
 
@@ -194,7 +250,9 @@ namespace SqlLinq
 
             if (ErrorStart >= 0)
             {
-                (ErrorStart, ErrorLength) = ToSource(calls, ErrorStart, ErrorLength);
+                var (end, size) = ToSource(calls, ErrorStart + ErrorLength - 1, 1);
+                var (start, length) = ToSource(calls, ErrorStart, ErrorLength);
+                (ErrorStart, ErrorLength) = (start, ErrorLength > 0 ? end + size - start : length);
             }
         }
 
@@ -229,7 +287,7 @@ namespace SqlLinq
             {
                 at = call.Args.IndexOf(text, at, StringComparison.Ordinal);
                 var start = _offset + call.End - call.Args.Length + at;
-                var parser = new SqlParser(_functions.Values, start, _lenient);
+                var parser = new SqlParser(_functions.Values, start, _lenient) { _aggregates = (!_expression || _aggregates) && node.AncestorsBelow(node.EnclosingSelect()).Any(a => a is Columns || a is HavingClause) };
                 ExpressionNode expression = null;
                 SqlException error;
                 try
@@ -262,16 +320,37 @@ namespace SqlLinq
             return arguments;
         }
 
+        internal static Dictionary<string, ISqlFunction> ByName(IEnumerable<ISqlFunction> functions)
+        {
+            var named = new Dictionary<string, ISqlFunction>(StringComparer.OrdinalIgnoreCase);
+            foreach (var function in functions)
+            {
+                if (!named.TryAdd(function.Name, function))
+                {
+                    throw new ArgumentException(string.Format(CultureInfo.CurrentCulture, "The functions can't be used because more than one is named '{0}'.", function.Name), nameof(functions));
+                }
+            }
+
+            return named;
+        }
+
         public bool Parse(TextReader sourceReader)
+        {
+            return Parse(sourceReader, null);
+        }
+
+        private bool Parse(TextReader sourceReader, string source)
         {
             Debug.Assert(sourceReader != null);
 
+            _source = source;
             m_parser = ParserFactory.CreateParser(sourceReader);
             m_parser.TrimReductions = true;
             ErrorStart = -1;
             ErrorLength = 0;
             _terminals.Clear();
             _reductions.Clear();
+            var comment = -1;
 
             while (true)
             {
@@ -289,11 +368,25 @@ namespace SqlLinq
                         foreach (Symbol tokenSymbol in m_parser.GetExpectedTokens())
                             text.AppendFormat(CultureInfo.CurrentCulture, " {0}", tokenSymbol);
 
+                        var opened = new Stack<TerminalNode>();
+                        foreach (var read in _terminals.Take(_terminals.Count - 1))
+                        {
+                            if (read.Text == "(")
+                            {
+                                opened.Push(read);
+                            }
+                            else if (read.Text == ")" && opened.Count > 0)
+                            {
+                                opened.Pop();
+                            }
+                        }
+
                         var call = m_parser.TokenText == "(" && _terminals.Count > 1 && _terminals[^2].Symbol.Name == "Id" ? _terminals[^2] : null;
+                        var unbalanced = m_parser.TokenSymbol.SymbolType == SymbolType.End && opened.Count > 0 ? opened.Peek() : m_parser.TokenText == ")" && opened.Count == 0 ? _terminals[^1] : null;
                         ErrorString = string.Format(CultureInfo.CurrentCulture, "Syntax Error. Line {0}. Expecting: {1}.", m_parser.LineNumber, text);
-                        ErrorKind = call == null ? SqlErrorKind.Syntax : SqlErrorKind.UnknownName;
-                        ErrorStart = call?.Start ?? m_parser.TokenCharPosition;
-                        ErrorLength = call?.Length ?? m_parser.TokenLength;
+                        ErrorKind = call != null ? SqlErrorKind.UnknownName : unbalanced != null ? SqlErrorKind.UnbalancedParentheses : SqlErrorKind.Syntax;
+                        ErrorStart = call?.Start ?? unbalanced?.Start ?? m_parser.TokenCharPosition;
+                        ErrorLength = call?.Length ?? (unbalanced == null ? m_parser.TokenLength : m_parser.TokenCharPosition + m_parser.TokenLength - unbalanced.Start);
 
                         return false;
 
@@ -333,11 +426,14 @@ namespace SqlLinq
                     case ParseMessage.CommentError:
                         ErrorString = "Comment Error. Unexpected end of input.";
                         ErrorKind = SqlErrorKind.UnterminatedComment;
-                        ErrorStart = m_parser.TokenCharPosition;
-                        ErrorLength = m_parser.TokenLength;
+                        ErrorStart = comment;
+                        ErrorLength = m_parser.TokenCharPosition - comment;
                         return false;
 
                     case ParseMessage.CommentBlockRead:
+                        comment = m_parser.TokenCharPosition;
+                        break;
+
                     case ParseMessage.CommentLineRead:
                         // don't do anything 
                         break;

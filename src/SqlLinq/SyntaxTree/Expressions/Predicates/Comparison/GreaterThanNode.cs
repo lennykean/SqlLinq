@@ -1,6 +1,4 @@
-﻿using System;
-using System.Reflection;
-using System.Linq.Expressions;
+﻿using System.Linq.Expressions;
 
 namespace SqlLinq.SyntaxTree.Expressions.Predicates.Comparison
 {

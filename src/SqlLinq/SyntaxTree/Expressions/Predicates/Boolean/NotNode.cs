@@ -1,5 +1,7 @@
 ﻿using System.Linq.Expressions;
 
+using SqlLinq.SyntaxTree.Expressions.Predicates.Comparison;
+
 namespace SqlLinq.SyntaxTree.Expressions.Predicates.Boolean
 {
     [SyntaxNode(RuleConstants.RULE_NOTEXP_NOT)]
@@ -7,7 +9,9 @@ namespace SqlLinq.SyntaxTree.Expressions.Predicates.Boolean
     {
         internal override Expression CreateExpression(ParameterExpression sourceData, ParameterExpression param)
         {
-            return Expression.Not(CreateChildExpression(sourceData, param, 1));
+            var value = CreateChildExpression(sourceData, param, 1);
+
+            return Compiled(() => Expression.Not(PredicateExpressionNode.Condition(value)));
         }
     }
 }

@@ -52,7 +52,7 @@ var members = tables.Query(
 ```csharp
 // Two collections can also be joined directly, as "this" and "that"
 var members = people.Query<Person, Family, IDictionary<string, object>>(
-    "SELECT Name, that.Name AS Family FROM this INNER JOIN that ON this.Address = that.Address",
+    "SELECT this.Name, that.Name AS Family FROM this INNER JOIN that ON this.Address = that.Address",
     families);
 ```
 

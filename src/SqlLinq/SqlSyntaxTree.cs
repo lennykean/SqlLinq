@@ -78,7 +78,7 @@ namespace SqlLinq
         {
             if (Root == null)
             {
-                throw new InvalidOperationException("The text didn't parse, so it has no tree to rewrite.");
+                throw new InvalidOperationException("The tree can't be rewritten because the text didn't parse.");
             }
 
             var root = Root.Replace(replacement);
@@ -90,7 +90,7 @@ namespace SqlLinq
         {
             if (Root == null)
             {
-                throw new InvalidOperationException("The text didn't parse, so it has no tree to bind.");
+                throw new InvalidOperationException("The tree can't be bound because the text didn't parse.");
             }
 
             return new SqlSyntaxTree(Text, Root.Bind(functions), Error, Names);
@@ -253,23 +253,19 @@ namespace SqlLinq
                         yield return member;
                     }
                 }
-                else if (node is Join)
+                else if (node is Join || IsMember(node))
                 {
                     foreach (var id in Ids(node))
                     {
                         yield return id;
                     }
                 }
-                else if (IsMember(node))
-                {
-                    yield return Ids(node).First();
-                }
             }
         }
 
         private static IEnumerable<TerminalNode> Ids(NonTerminalNode node)
         {
-            return node.Children.OfType<TerminalNode>().Where(t => t.Symbol.Name == "Id");
+            return node.Children.OfType<TerminalNode>().Where(t => t.Symbol.Name == "Id" && !SqlSyntax.Name(t).LookupId.StartsWith(SqlParser.Placeholder, StringComparison.Ordinal));
         }
 
         private static bool IsMember(NonTerminalNode node)
